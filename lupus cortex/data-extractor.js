@@ -488,6 +488,7 @@
     var io = $('lxKeyOpenaq'); if (io) io.value = '';
     var ic = $('lxKeyCams'); if (ic) ic.value = '';
     var ie = $('lxKeyEarthdata'); if (ie) ie.value = '';
+    var ib = $('lxBackendUrl'); if (ib) ib.value = loadBackendUrl() || API_BASE_DEFAULT;
     renderKeyStatus();
     modal.classList.remove('hidden');
   }
@@ -501,6 +502,10 @@
       var input = $(KEY_INPUT_IDS[p]);
       entered[p] = input && input.value.trim() ? input.value.trim() : '';
     });
+    /* Backend URL: saved alongside the keys, no verification needed here
+     * (the extractor's 60-s watcher reports reachability). */
+    var bInput = $('lxBackendUrl');
+    if (bInput) saveBackendUrl(bInput.value);
     var toCheck = PROVIDERS.filter(function (p) { return entered[p]; });
     var note = $('lxKeyNote');
     if (!toCheck.length) {
@@ -1035,7 +1040,22 @@
   /* ------------------------------------------------------------------ */
   /* 10b. Auto-send, pending bundle, backend watcher                     */
   /* ------------------------------------------------------------------ */
-  function apiBaseNow() { return String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, ''); }
+  /* Backend base: explicit window override first, then the URL saved in
+   * the API-keys popup (localStorage), then the local model backend
+   * default. The local backend runs on the Mac at 127.0.0.1:8100; the
+   * public Pages site cannot reach localhost, so paste a public backend
+   * URL in the popup when one exists. */
+  var API_BASE_STORAGE_KEY = 'lupus_cortex_api_base';
+  var API_BASE_DEFAULT = 'http://127.0.0.1:8100';
+  function loadBackendUrl() {
+    try { return String(localStorage.getItem(API_BASE_STORAGE_KEY) || '').replace(/\/$/, ''); } catch (_) { return ''; }
+  }
+  function saveBackendUrl(url) {
+    var v = String(url || '').trim().replace(/\/$/, '');
+    try { if (v) localStorage.setItem(API_BASE_STORAGE_KEY, v); else localStorage.removeItem(API_BASE_STORAGE_KEY); } catch (_) { /* ignore */ }
+    return v || API_BASE_DEFAULT;
+  }
+  function apiBaseNow() { return String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, '') || loadBackendUrl() || API_BASE_DEFAULT; }
 
   function savePendingBundle(bundle) {
     try { localStorage.setItem(pendingBundleKey, JSON.stringify(bundle)); } catch (_) { /* storage unavailable: the download is still offered */ }

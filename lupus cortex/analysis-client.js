@@ -2,11 +2,22 @@
   'use strict';
 
   const state = { status: 'idle', analysis: null, request: null, error: null };
-  const apiBase = String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, '');
+  /* Backend base: explicit window override first, then the URL saved from
+   * the extractor's API-keys popup (localStorage), then the local model
+   * backend default. The local backend runs on the Mac at 127.0.0.1:8100;
+   * the public Pages site cannot reach localhost, so paste a public
+   * backend URL in the popup when one exists. */
+  function storedApiBase() {
+    try { return String(localStorage.getItem('lupus_cortex_api_base') || '').replace(/\/$/, ''); } catch (_) { return ''; }
+  }
+  const apiBase = String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, '') || storedApiBase() || 'http://127.0.0.1:8100';
 
   function emit(name, detail) { window.dispatchEvent(new CustomEvent(name, { detail })); }
 
-  const REQUIRED_SCHEMA_VERSION = '1.0';
+  /* The model backend serves canonical report schema v3 (model_api_v4,
+   * built on the v4 Jupyter-trained RF models). The dashboard renders the
+   * v3 report fields, so the client accepts 3.0 here. */
+  const REQUIRED_SCHEMA_VERSION = '3.0';
 
   function valid(report) {
     if (!report || typeof report !== 'object' || report.schema_version !== REQUIRED_SCHEMA_VERSION) return false;

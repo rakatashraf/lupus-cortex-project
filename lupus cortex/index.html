@@ -606,6 +606,11 @@
         <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyEarthdata" type="button">Verify now</button></div>
         <div class="lx-key-stored">Stored: <span id="lxKeyStatusEarthdata">Not set</span></div>
       </div>
+      <div class="lx-key-field">
+        <label for="lxBackendUrl">Model backend URL</label>
+        <input type="text" id="lxBackendUrl" autocomplete="off" placeholder="http://127.0.0.1:8100" />
+        <div class="lx-key-stored">The local model backend runs on this Mac at 127.0.0.1:8100. The public site cannot reach localhost — paste a public backend URL here when one exists.</div>
+      </div>
       <p class="lx-key-privacy">Keys are saved in this browser only, until they expire. They are verified before they are stored and checked again before each extraction. The OpenAQ key is sent only to api.openaq.org, and the Earthdata token only to cmr.earthdata.nasa.gov for verification. The CAMS ADS key is never sent from the browser — CAMS ADS is not browser-callable, so those legs are queued for the backend and the key is checked by the backend when it runs. Keys are never logged.</p>
       <div class="lx-key-actions">
         <button class="btn primary" id="lxKeySaveBtn" type="button">Save keys</button>
