@@ -249,6 +249,7 @@
               <button class="lx-area-tab active" data-lx-area-tab="place" role="tab" aria-selected="true" type="button">🔎 By Place Name</button>
               <button class="lx-area-tab" data-lx-area-tab="coords" role="tab" aria-selected="false" type="button">🧭 By Coordinates</button>
               <button class="lx-area-tab" data-lx-area-tab="bbox" role="tab" aria-selected="false" type="button">🗺️ Bounding Box</button>
+              <button class="lx-area-tab" data-lx-area-tab="pointer" role="tab" aria-selected="false" type="button">📍 By Map Pointer</button>
             </div>
             <div class="lx-area-pane active" data-lx-area-pane="place">
               <div class="lx-input-row">
@@ -260,22 +261,34 @@
               <p class="lx-hint">Powered by OpenStreetMap geocoding (Nominatim).</p>
             </div>
             <div class="lx-area-pane" data-lx-area-pane="coords">
-              <div class="lx-input-row">
-                <input type="number" id="lxCoordLat" placeholder="Latitude (-90 to 90)" step="0.0001" min="-90" max="90" />
-                <input type="number" id="lxCoordLng" placeholder="Longitude (-180 to 180)" step="0.0001" min="-180" max="180" />
-                <button class="btn primary small" id="lxCoordsApplyBtn" type="button">Apply</button>
+              <div class="lx-grid-2">
+                <div><label for="lxCoordSw">SW — southwest corner (lat, lng)</label><input type="text" id="lxCoordSw" placeholder="e.g. 22.80, 89.24" autocomplete="off" /></div>
+                <div><label for="lxCoordNe">NE — northeast corner (lat, lng)</label><input type="text" id="lxCoordNe" placeholder="e.g. 24.80, 91.31" autocomplete="off" /></div>
+              </div>
+              <div class="lx-input-row" style="margin-top:10px">
+                <button class="btn primary small" id="lxCoordsApplyBtn" type="button">Apply bounding box</button>
+                <button class="btn secondary small" id="lxCoordsStudyAreaBtn" type="button">Use study area</button>
               </div>
               <p class="lx-status-line" id="lxCoordsStatus"></p>
+              <p class="lx-hint">Enter each corner as latitude, longitude. SW is the bottom-left corner and NE is the top-right. The Lupus study area is SW 22.80, 89.24 — NE 24.80, 91.31.</p>
             </div>
             <div class="lx-area-pane" data-lx-area-pane="bbox">
               <div class="lx-grid-2">
-                <div><label for="lxBboxMinLat">Min latitude</label><input type="number" id="lxBboxMinLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
-                <div><label for="lxBboxMaxLat">Max latitude</label><input type="number" id="lxBboxMaxLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
-                <div><label for="lxBboxMinLng">Min longitude</label><input type="number" id="lxBboxMinLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
-                <div><label for="lxBboxMaxLng">Max longitude</label><input type="number" id="lxBboxMaxLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+                <div><label for="lxBboxMinLat">SW latitude</label><input type="number" id="lxBboxMinLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMaxLat">NE latitude</label><input type="number" id="lxBboxMaxLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMinLng">SW longitude</label><input type="number" id="lxBboxMinLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+                <div><label for="lxBboxMaxLng">NE longitude</label><input type="number" id="lxBboxMaxLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
               </div>
               <div class="lx-input-row" style="margin-top:10px"><button class="btn primary small" id="lxBboxApplyBtn" type="button">Apply bounding box</button></div>
               <p class="lx-status-line" id="lxBboxStatus"></p>
+            </div>
+            <div class="lx-area-pane" data-lx-area-pane="pointer">
+              <p class="lx-hint">Pick the box on the map: click <strong>Pick on map</strong>, then click the map twice — first the <strong>SW</strong> (bottom-left) corner, then the <strong>NE</strong> (top-right) corner. The box is drawn on the map as you pick.</p>
+              <div class="lx-input-row">
+                <button class="btn primary small" id="lxPointerPickBtn" type="button">📍 Pick on map</button>
+                <button class="btn secondary small hidden" id="lxPointerCancelBtn" type="button">Cancel</button>
+              </div>
+              <p class="lx-status-line" id="lxPointerStatus"></p>
             </div>
           </fieldset>
 

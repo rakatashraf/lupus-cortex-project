@@ -4,7 +4,30 @@
 
   let mapInstance;
   let marker;
+  let bboxRect;
+  let bboxMarker;
   let searchTimer;
+
+  /* Bounding-box overlay for the data extractor's pointer pick: a marker
+   * for the SW corner, then a rectangle once NE is picked. Drawn/cleared
+   * through window.lxMapBbox so data-extractor.js can drive it. */
+  function drawBbox(swLat, swLng, neLat, neLng) {
+    const map = ensureMap();
+    if (!map) return;
+    if (bboxRect) { bboxRect.remove(); bboxRect = null; }
+    if (bboxMarker) { bboxMarker.remove(); bboxMarker = null; }
+    if (swLat === neLat && swLng === neLng) {
+      bboxMarker = L.circleMarker([swLat, swLng], { radius: 6, color: '#38bdf8', weight: 2, fillOpacity: 0.5 }).addTo(map);
+    } else {
+      bboxRect = L.rectangle([[swLat, swLng], [neLat, neLng]], { color: '#38bdf8', weight: 2, fillOpacity: 0.08 }).addTo(map);
+      map.fitBounds(bboxRect.getBounds().pad(0.15));
+    }
+  }
+  function clearBbox() {
+    if (bboxRect) { bboxRect.remove(); bboxRect = null; }
+    if (bboxMarker) { bboxMarker.remove(); bboxMarker = null; }
+  }
+  window.lxMapBbox = { draw: drawBbox, clear: clearBbox };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 
   function setStatus(message, level = 'info') {
@@ -28,6 +51,12 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(mapInstance);
     mapInstance.on('click', async event => {
       const { lat, lng } = event.latlng;
+      /* If the data extractor is picking a bounding box (SW then NE),
+       * route the click there instead of selecting a single place. */
+      if (window.LupusExtractor && typeof window.LupusExtractor.isBboxPicking === 'function' && window.LupusExtractor.isBboxPicking()) {
+        window.LupusExtractor.bboxPickClick(lat, lng);
+        return;
+      }
       setStatus(`Resolving ${lat.toFixed(4)}, ${lng.toFixed(4)}...`);
       try {
         const result = await reverseGeocode(lat, lng);

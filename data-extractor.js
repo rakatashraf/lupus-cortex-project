@@ -616,8 +616,8 @@
     if (!el) return;
     if (!area) { el.textContent = 'No area selected yet.'; return; }
     if (area.mode === 'bbox') {
-      el.textContent = 'Bounding box: lat ' + area.bbox[1].toFixed(4) + ' to ' + area.bbox[3].toFixed(4) +
-        ', lng ' + area.bbox[0].toFixed(4) + ' to ' + area.bbox[2].toFixed(4) + '.';
+      el.textContent = 'Bounding box: SW ' + area.bbox[1].toFixed(4) + ', ' + area.bbox[0].toFixed(4) +
+        ' — NE ' + area.bbox[3].toFixed(4) + ', ' + area.bbox[2].toFixed(4) + '.';
     } else {
       el.textContent = 'Point: ' + area.name + ' (' + area.lat.toFixed(4) + ', ' + area.lng.toFixed(4) + ').';
     }
@@ -1261,23 +1261,53 @@
       if (status) status.textContent = 'Search failed. Check your internet connection.';
     });
   }
+  /* The coordinate search is a bounding box: SW (bottom-left) and NE
+   * (top-right) corners, each entered as "lat, lng". The Lupus study
+   * area is SW 22.80, 89.24 — NE 24.80, 91.31. bbox is stored as
+   * [minLng, minLat, maxLng, maxLat] = [SW lng, SW lat, NE lng, NE lat]. */
+  function parseLatLngPair(text) {
+    if (!text) return null;
+    var parts = String(text).split(',');
+    if (parts.length !== 2) return null;
+    var lat = Number(parts[0].trim());
+    var lng = Number(parts[1].trim());
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat: lat, lng: lng };
+  }
+  function drawBboxOnMap(swLat, swLng, neLat, neLng) {
+    if (window.lxMapBbox && typeof window.lxMapBbox.draw === 'function') {
+      window.lxMapBbox.draw(swLat, swLng, neLat, neLng);
+    }
+  }
+  function applyBbox(swLat, swLng, neLat, neLng, name) {
+    var centerLat = (swLat + neLat) / 2;
+    var centerLng = (swLng + neLng) / 2;
+    selectedArea = { mode: 'bbox', lat: centerLat, lng: centerLng, name: name || 'Bounding box', bbox: [swLng, swLat, neLng, neLat] };
+    setAreaLabel();
+    if (typeof window.setLocation === 'function') window.setLocation(centerLat, centerLng, 'Bounding box centre');
+    drawBboxOnMap(swLat, swLng, neLat, neLng);
+  }
   function handleCoordsApply() {
-    var lat = Number($('lxCoordLat') && $('lxCoordLat').value);
-    var lng = Number($('lxCoordLng') && $('lxCoordLng').value);
+    var sw = parseLatLngPair($('lxCoordSw') && $('lxCoordSw').value);
+    var ne = parseLatLngPair($('lxCoordNe') && $('lxCoordNe').value);
     var status = $('lxCoordsStatus');
-    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      if (status) status.textContent = 'Latitude must be -90 to 90 and longitude -180 to 180.';
+    var bad = !sw || !ne ||
+      sw.lat < -90 || sw.lat > 90 || ne.lat < -90 || ne.lat > 90 ||
+      sw.lng < -180 || sw.lng > 180 || ne.lng < -180 || ne.lng > 180 ||
+      sw.lat >= ne.lat || sw.lng >= ne.lng;
+    if (bad) {
+      if (status) status.textContent = 'Enter two corners as "lat, lng": SW (bottom-left) and NE (top-right). SW latitude and longitude must each be smaller than NE.';
       return;
     }
-    if (status) status.textContent = 'Resolving place name…';
-    lxReverseGeocode(lat, lng).then(function (r) {
-      var name = (r.address && (r.address.city || r.address.town || r.address.village || r.address.county)) || r.display_name || ('Location (' + lat.toFixed(4) + ', ' + lng.toFixed(4) + ')');
-      applyPoint(lat, lng, name);
-      if (status) status.textContent = 'Area set to ' + name + '.';
-    }).catch(function () {
-      applyPoint(lat, lng, 'Location (' + lat.toFixed(4) + ', ' + lng.toFixed(4) + ')');
-      if (status) status.textContent = 'Coordinates applied, but reverse geocoding failed.';
-    });
+    applyBbox(sw.lat, sw.lng, ne.lat, ne.lng, 'Bounding box');
+    if (status) status.textContent = 'Bounding box applied: SW ' + sw.lat.toFixed(4) + ', ' + sw.lng.toFixed(4) + ' — NE ' + ne.lat.toFixed(4) + ', ' + ne.lng.toFixed(4) + '.';
+  }
+  function handleCoordsStudyArea() {
+    var swInput = $('lxCoordSw');
+    var neInput = $('lxCoordNe');
+    if (swInput) swInput.value = '22.80, 89.24';
+    if (neInput) neInput.value = '24.80, 91.31';
+    handleCoordsApply();
   }
   function handleBboxApply() {
     var minLat = Number($('lxBboxMinLat') && $('lxBboxMinLat').value);
@@ -1288,15 +1318,59 @@
     var bad = [minLat, maxLat, minLng, maxLng].some(function (v) { return !Number.isFinite(v); }) ||
       minLat < -90 || maxLat > 90 || minLng < -180 || maxLng > 180 || minLat >= maxLat || minLng >= maxLng;
     if (bad) {
-      if (status) status.textContent = 'Check the bounding box: latitudes -90 to 90, longitudes -180 to 180, and min must be less than max.';
+      if (status) status.textContent = 'Check the bounding box: SW latitude and longitude must each be smaller than NE; latitudes -90 to 90, longitudes -180 to 180.';
       return;
     }
-    var centerLat = (minLat + maxLat) / 2;
-    var centerLng = (minLng + maxLng) / 2;
-    selectedArea = { mode: 'bbox', lat: centerLat, lng: centerLng, name: 'Bounding box', bbox: [minLng, minLat, maxLng, maxLat] };
-    setAreaLabel();
-    if (typeof window.setLocation === 'function') window.setLocation(centerLat, centerLng, 'Bounding box centre');
-    if (status) status.textContent = 'Bounding box applied.';
+    applyBbox(minLat, minLng, maxLat, maxLng, 'Bounding box');
+    if (status) status.textContent = 'Bounding box applied: SW ' + minLat.toFixed(4) + ', ' + minLng.toFixed(4) + ' — NE ' + maxLat.toFixed(4) + ', ' + maxLng.toFixed(4) + '.';
+  }
+
+  /* Pointer pick: the user clicks the map twice — SW corner, then NE
+   * corner. map.js routes map clicks here while picking is active. */
+  var bboxPick = null; /* { stage: 'sw'|'ne', sw: {lat,lng}|null } */
+  function startBboxPick() {
+    bboxPick = { stage: 'sw', sw: null };
+    var status = $('lxPointerStatus');
+    if (status) status.textContent = 'Click the SW (bottom-left) corner on the map below.';
+    var cancel = $('lxPointerCancelBtn');
+    if (cancel) cancel.classList.remove('hidden');
+    var mapSection = document.getElementById('map-section');
+    if (mapSection) mapSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    var clickTab = document.querySelector('[data-mc-tab="click"]');
+    if (clickTab) clickTab.click();
+  }
+  function cancelBboxPick() {
+    bboxPick = null;
+    if (window.lxMapBbox && typeof window.lxMapBbox.clear === 'function') window.lxMapBbox.clear();
+    var status = $('lxPointerStatus');
+    if (status) status.textContent = 'Picking cancelled.';
+    var cancel = $('lxPointerCancelBtn');
+    if (cancel) cancel.classList.add('hidden');
+  }
+  function handleBboxPickClick(lat, lng) {
+    if (!bboxPick) return false;
+    if (bboxPick.stage === 'sw') {
+      bboxPick.sw = { lat: lat, lng: lng };
+      bboxPick.stage = 'ne';
+      drawBboxOnMap(lat, lng, lat, lng);
+      var status = $('lxPointerStatus');
+      if (status) status.textContent = 'SW set to ' + lat.toFixed(4) + ', ' + lng.toFixed(4) + '. Now click the NE (top-right) corner.';
+      return true;
+    }
+    var sw = bboxPick.sw;
+    var swLat = Math.min(sw.lat, lat), neLat = Math.max(sw.lat, lat);
+    var swLng = Math.min(sw.lng, lng), neLng = Math.max(sw.lng, lng);
+    bboxPick = null;
+    var swInput = $('lxCoordSw');
+    if (swInput) swInput.value = swLat.toFixed(4) + ', ' + swLng.toFixed(4);
+    var neInput = $('lxCoordNe');
+    if (neInput) neInput.value = neLat.toFixed(4) + ', ' + neLng.toFixed(4);
+    applyBbox(swLat, swLng, neLat, neLng, 'Bounding box');
+    var status2 = $('lxPointerStatus');
+    if (status2) status2.textContent = 'Bounding box applied: SW ' + swLat.toFixed(4) + ', ' + swLng.toFixed(4) + ' — NE ' + neLat.toFixed(4) + ', ' + neLng.toFixed(4) + '.';
+    var cancel = $('lxPointerCancelBtn');
+    if (cancel) cancel.classList.add('hidden');
+    return true;
   }
   function toggleDateInputs() {
     var rangeMode = $('lxDateRange') && $('lxDateRange').checked;
@@ -1378,8 +1452,14 @@
     if (placeInput) placeInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') handlePlaceSearch(); });
     var coordsBtn = $('lxCoordsApplyBtn');
     if (coordsBtn) coordsBtn.addEventListener('click', handleCoordsApply);
+    var studyBtn = $('lxCoordsStudyAreaBtn');
+    if (studyBtn) studyBtn.addEventListener('click', handleCoordsStudyArea);
     var bboxBtn = $('lxBboxApplyBtn');
     if (bboxBtn) bboxBtn.addEventListener('click', handleBboxApply);
+    var pickBtn = $('lxPointerPickBtn');
+    if (pickBtn) pickBtn.addEventListener('click', startBboxPick);
+    var pickCancelBtn = $('lxPointerCancelBtn');
+    if (pickCancelBtn) pickCancelBtn.addEventListener('click', cancelBboxPick);
 
     var dateToday = $('lxDateToday');
     if (dateToday) dateToday.addEventListener('change', toggleDateInputs);
@@ -1458,6 +1538,10 @@
     getDates: getDates,
     run: runExtraction,
     getBundle: function () { return lastBundle; },
+    isBboxPicking: function () { return !!bboxPick; },
+    bboxPickClick: handleBboxPickClick,
+    startBboxPick: startBboxPick,
+    cancelBboxPick: cancelBboxPick,
     downloadBundle: downloadBundle,
     sendToBackend: sendToBackend,
     autoSendBundle: autoSendBundle,
