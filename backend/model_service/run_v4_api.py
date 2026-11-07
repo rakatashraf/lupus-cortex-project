@@ -48,6 +48,7 @@ CHECKPOINTS_CANDIDATES = [
     Path("checkpoints.json"),
 ]
 REF_CANDIDATES = [
+    Path("lupus_cortex_fixed_reference_30.csv"),
     Path("lupus_output_v4") / "reference_dataset" / "lupus_cortex_fixed_reference_30.csv",
     Path("reference_dataset") / "lupus_cortex_fixed_reference_30.csv",
     Path("lupus_output_v4") / "04_Fixed_Reference_Dataset" / "lupus_cortex_fixed_reference_30.csv",
@@ -136,6 +137,40 @@ def resolve() -> dict[str, Path]:
     return resolved
 
 
+def _in_ipython() -> bool:
+    try:
+        return get_ipython() is not None  # noqa: F821 - defined by IPython
+    except NameError:
+        return False
+
+
+def _serve_background(port: int):
+    """Start uvicorn in a daemon thread (Jupyter-safe: the cell returns
+    and the kernel stays usable while the server keeps running)."""
+    import threading
+    import time
+    import urllib.request
+
+    import uvicorn
+
+    config = uvicorn.Config("model_api_v4:app", host="127.0.0.1", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True, name="lupus-v4-api")
+    thread.start()
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as r:
+                print(f"Health check OK: {r.read().decode()[:300]}")
+                break
+        except Exception:
+            continue
+    else:
+        print("WARNING: server thread started but /health did not answer within 15 s.")
+    print("Server is running in a background thread. Keep this kernel alive;")
+    print("restarting the kernel or closing this notebook stops the server.")
+
+
 def main() -> None:
     resolved = resolve()
     for key, path in resolved.items():
@@ -156,7 +191,10 @@ def main() -> None:
     port = int(os.environ.get("LUPUS_V4_PORT", "8100"))
     print(f"\nLupus Cortex Model Service v4 starting on http://127.0.0.1:{port}")
     print(f"Health: http://127.0.0.1:{port}/health")
-    uvicorn.run("model_api_v4:app", host="127.0.0.1", port=port, log_level="info")
+    if _in_ipython():
+        _serve_background(port)
+    else:
+        uvicorn.run("model_api_v4:app", host="127.0.0.1", port=port, log_level="info")
 
 
 if __name__ == "__main__":
