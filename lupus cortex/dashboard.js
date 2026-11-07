@@ -85,6 +85,8 @@ function hwiLabelFromScore(score) {
 
 function initDashboard() {
   console.log('📊 Initializing dashboard...');
+  requestDeviceLocation();
+  window.LupusExtractor?.init?.();
   fetchUrbanHealthData();
 }
 
@@ -127,7 +129,15 @@ function renderDashboard(data) {
   const hwiCard = document.getElementById('hwiScoreCard');
   if (hwiScoreEl) hwiScoreEl.textContent = hwi ? hwi.score : '—';
   if (hwiStatusEl) hwiStatusEl.textContent = hwi?.status || 'Data unavailable';
-  if (hwiCard) hwiCard.onclick = hwi ? () => openIndexDetail('HWI', hwi) : null;
+  if (hwiCard) hwiCard.onclick = () => openIndexDetail('HWI', hwi);
+  const overallCard = document.getElementById('overallScore')?.closest('.overall-score-card');
+  if (overallCard) {
+    overallCard.setAttribute('role', 'button');
+    overallCard.setAttribute('tabindex', '0');
+    overallCard.setAttribute('aria-label', 'Open Human Wellbeing Index details');
+    overallCard.onclick = () => openIndexDetail('HWI', hwi);
+    overallCard.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openIndexDetail('HWI', hwi); } };
+  }
   
   // Render indices
   renderIndicesGrid(data.indices);
@@ -191,10 +201,11 @@ function openIndexDetail(key, liveIndex) {
     console.warn('No detail entry for index', key);
     return;
   }
-  const score  = liveIndex?.score ?? 0;
+  const hasLive = liveIndex && Number.isFinite(Number(liveIndex.score));
+  const score  = hasLive ? liveIndex.score : null;
   const target = detail.target ?? liveIndex?.target ?? 75;
-  const status = liveIndex?.status ?? statusFromScore(score);
-  const progress = Math.min(100, Math.round((score / target) * 100));
+  const status = hasLive ? (liveIndex.status ?? statusFromScore(score)) : 'Awaiting model';
+  const progress = hasLive ? Math.min(100, Math.round((score / target) * 100)) : 0;
 
   currentIndexDetail = { key, detail, score, target, status, progress, liveIndex };
 
@@ -235,13 +246,20 @@ function renderDashboardUnavailable(requested) {
   if (grid) grid.innerHTML = urbanIndices.map(index => {
     const detail = (window.INDEX_DETAILS || {})[index.key];
     const components = detail?.components?.map(component => component.name).join(', ') || 'Component definitions pending';
-    return `<article class="index-card index-card--framework" tabindex="0" aria-label="${index.name} framework">
+    return `<article class="index-card index-card--framework" data-index-key="${index.key}" tabindex="0" role="button" aria-label="${index.name} framework — open details">
       <div class="index-card-topline"><span class="index-status-badge advisory">Framework</span><span class="index-key">${index.key}</span></div>
       <h3>${index.name}</h3><p class="index-framework-description">${index.description}</p>
       <div class="index-framework-meta"><span>Components</span><p>${components}</p></div>
-      <div class="index-card-cta">Values, confidence and actions appear after analysis</div>
+      <div class="index-card-cta">View framework details →</div>
     </article>`;
   }).join('');
+  if (grid) grid.querySelectorAll('.index-card[data-index-key]').forEach(card => {
+    const open = () => openIndexDetail(card.dataset.indexKey, null);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+    });
+  });
   ['overallScore', 'hwiScore'].forEach(id => { const element = document.getElementById(id); if (element) element.textContent = '—'; });
   ['scoreStatus', 'hwiStatus'].forEach(id => { const element = document.getElementById(id); if (element) element.textContent = requested ? 'Awaiting model report' : 'Data unavailable'; });
 }
@@ -286,10 +304,12 @@ function statusToClass(s) {
 
 function renderSummaryRow(score, target, progress, status) {
   const sClass = statusToClass(status);
+  const scoreText = Number.isFinite(Number(score)) ? score : '—';
+  const scoreFoot = Number.isFinite(Number(score)) ? (score >= target ? 'On / above target' : 'Below target') : 'Awaiting model report';
   return `
     <div class="summary-tile">
       <div class="summary-label">Current Score</div>
-      <div class="summary-value ${sClass}">${score}</div>
+      <div class="summary-value ${sClass}">${scoreText}</div>
       <div class="summary-foot">out of 100</div>
     </div>
     <div class="summary-tile">
@@ -305,7 +325,7 @@ function renderSummaryRow(score, target, progress, status) {
     <div class="summary-tile">
       <div class="summary-label">Status</div>
       <div class="summary-pill ${sClass}">${status}</div>
-      <div class="summary-foot">${score >= target ? 'On / above target' : 'Below target'}</div>
+      <div class="summary-foot">${scoreFoot}</div>
     </div>
   `;
 }
@@ -326,6 +346,10 @@ function switchIndexTab(tabId) {
   else if (tabId === 'technology')  container.innerHTML = renderTechnologyTab(d);
   else if (tabId === 'formula')     container.innerHTML = renderFormulaTab(d);
   else if (tabId === 'outlook')     container.innerHTML = renderBackendOutlook();
+  else if (tabId === 'suggestions') container.innerHTML = renderSuggestionsTab();
+  else if (tabId === 'warnings')    container.innerHTML = renderWarningsTab();
+  else if (tabId === 'predictions') container.innerHTML = renderPredictionsTab();
+  else if (tabId === 'performance') container.innerHTML = renderPerformanceTab();
 }
 
 function componentCondition(score) {
@@ -343,34 +367,124 @@ function directionAwareComponentScore(component) {
 }
 
 function renderComponentsTab(d) {
-  const components = currentIndexDetail?.liveIndex?.components?.length ? currentIndexDetail.liveIndex.components : [];
-  if (!components.length) return '<h3 class="tab-heading">Component Breakdown</h3><p class="tab-sub">Component data unavailable. Scores and values are shown only when returned by the model.</p>';
+  const liveComponents = currentIndexDetail?.liveIndex?.components?.length ? currentIndexDetail.liveIndex.components : [];
+  if (liveComponents.length) return renderComponentsTable(liveComponents, true);
+  const defined = d.components || [];
+  if (!defined.length) return '<h3 class="tab-heading">Component Breakdown</h3><p class="tab-sub">Component data unavailable. Scores and values are shown only when returned by the model.</p>';
+  return renderComponentsTable(defined, false);
+}
+
+function renderComponentsTable(components, isLive) {
   const rows = components.map(c => {
-    const score = directionAwareComponentScore(c);
-    const condition = componentCondition(score);
+    const score = isLive ? directionAwareComponentScore(c) : null;
+    const condition = isLive ? componentCondition(score) : 'Awaiting model report';
+    const rowClass = isLive ? statusToClass(statusFromScore(score)) : 'warning';
+    const scoreCell = isLive
+      ? `<strong class="${statusToClass(statusFromScore(score))}">${score ?? 'Data unavailable'}</strong>`
+      : '<strong>awaiting model</strong>';
     return `
     <tr>
-      <td class="col-name">${c.name}</td>
+      <td class="col-name">${c.canonicalId ? c.canonicalId + ' · ' : ''}${c.name}</td>
       <td>${c.weight}%</td>
       <td>${c.direction || 'Mixed'}</td>
-      <td><strong class="${statusToClass(statusFromScore(score))}">${score ?? 'Data unavailable'}</strong></td>
-      <td><span class="component-condition ${statusToClass(statusFromScore(score))}">${condition}</span></td>
+      <td>${scoreCell}</td>
+      <td><span class="component-condition ${rowClass}">${condition}</span></td>
       <td>${c.unit}</td>
       <td>${c.calculation || 'Source-specific normalization'}</td>
       <td>
-        <div class="mini-bar ${statusToClass(statusFromScore(score))}"><span style="width:${Number.isFinite(score) ? score : 0}%"></span></div>
+        <div class="mini-bar ${rowClass}"><span style="width:${Number.isFinite(score) ? score : 0}%"></span></div>
       </td>
     </tr>`;
   }).join('');
   return `
     <h3 class="tab-heading">Component Breakdown</h3>
-    <p class="tab-sub">Model-returned component scores use source-specific methodology. The frontend does not normalize environmental observations.</p>
+    <p class="tab-sub">${isLive ? 'Model-returned component scores use source-specific methodology. The frontend does not normalize environmental observations.' : 'Components defined for this index. Scores and values appear here after the model returns them.'}</p>
     <div class="component-legend"><span class="normal">Perfect: 81-100</span><span class="advisory">Good for daily life but can be better: 61-80</span><span class="warning">Needs improvement as soon as possible: 41-60</span><span class="high-alert">Very poor for human wellbeing: 21-40</span><span class="critical-alert">Extremely hazardous and can cause loss for biodiversity: 0-20</span></div>
     <div class="detail-table-wrap">
       <table class="detail-table">
         <thead>
           <tr><th>Component</th><th>Weight</th><th>Direction</th><th>Score</th><th>Condition</th><th>Unit</th><th>Calculation</th><th>Contribution</th></tr>
         </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ---- Model-report tabs: suggestions / warnings / predictions / performance ----
+// Every value below comes only from the validated model report. When the
+// model has not returned a section, the tab says so — nothing is invented.
+function latestAnalysisReport() {
+  return window.CortexAnalysis?.snapshot?.().analysis || null;
+}
+
+function normalizeReportList(value) {
+  if (!value) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') return item.text || item.message || item.title || item.recommendation || JSON.stringify(item);
+      return String(item);
+    }).filter(Boolean);
+  }
+  if (typeof value === 'object') return Object.entries(value).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
+  return [String(value)];
+}
+
+function renderSuggestionsTab() {
+  const items = normalizeReportList(latestAnalysisReport()?.recommendations);
+  if (!items.length) return '<h3 class="tab-heading">Suggestions</h3><p class="tab-sub">No suggestions have been returned by the model yet. Suggestions appear here after an analysis.</p>';
+  return '<h3 class="tab-heading">Suggestions</h3><p class="tab-sub">Recommendations returned by the model for this analysis.</p><ul class="insight-list">' +
+    items.map(item => `<li>${escapeDashboardText(item)}</li>`).join('') + '</ul>';
+}
+
+function renderWarningsTab() {
+  const items = normalizeReportList(latestAnalysisReport()?.warnings);
+  if (!items.length) return '<h3 class="tab-heading">Warnings</h3><p class="tab-sub">No warnings have been returned by the model yet. Warnings appear here after an analysis.</p>';
+  return '<h3 class="tab-heading">Warnings</h3><p class="tab-sub">Warnings returned by the model for this analysis.</p><ul class="insight-list">' +
+    items.map(item => `<li>${escapeDashboardText(item)}</li>`).join('') + '</ul>';
+}
+
+function renderPredictionsTab() {
+  const forecasts = latestAnalysisReport()?.forecasts;
+  if (!forecasts || !Object.keys(forecasts).length) return '<h3 class="tab-heading">Predictions</h3><p class="tab-sub">No predictions have been returned by the model yet. Predictions appear here after an analysis.</p>';
+  const rows = Object.entries(forecasts).map(([key, value]) => {
+    if (Array.isArray(value)) {
+      const last = value.length ? value[value.length - 1] : null;
+      return `<tr><td><strong>${escapeDashboardText(key)}</strong></td><td>${escapeDashboardText(last ?? '—')}</td><td>${value.length} horizon step(s)</td></tr>`;
+    }
+    if (value && typeof value === 'object') return `<tr><td><strong>${escapeDashboardText(key)}</strong></td><td colspan="2">${escapeDashboardText(JSON.stringify(value))}</td></tr>`;
+    return `<tr><td><strong>${escapeDashboardText(key)}</strong></td><td>${escapeDashboardText(value ?? '—')}</td><td>—</td></tr>`;
+  }).join('');
+  return `<h3 class="tab-heading">Predictions</h3>
+    <p class="tab-sub">Model forecasts exactly as returned by the model. The frontend does not extrapolate environmental trends.</p>
+    <div class="detail-table-wrap">
+      <table class="detail-table">
+        <thead><tr><th>Index / Component</th><th>Latest predicted value</th><th>Detail</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderPerformanceTab() {
+  const components = latestAnalysisReport()?.components;
+  const entries = components && typeof components === 'object' && !Array.isArray(components)
+    ? Object.entries(components)
+    : (Array.isArray(components) ? components.map(c => [c?.id || c?.name || 'Component', c]) : []);
+  if (!entries.length) return '<h3 class="tab-heading">Component Performance</h3><p class="tab-sub">Component performance has not been returned by the model yet. Per-component results appear here after an analysis.</p>';
+  const rows = entries.map(([key, c]) => {
+    const val = (v) => Number.isFinite(Number(v)) ? Number(v).toFixed(3) : '—';
+    const valR2 = c?.val_r2 ?? c?.validation_r2 ?? c?.r2_val ?? c?.r2;
+    const persR2 = c?.persistence_r2 ?? c?.baseline_r2 ?? c?.persistence;
+    const model = c?.model || c?.algorithm || '—';
+    const name = c?.name || key;
+    return `<tr><td><strong>${escapeDashboardText(name)}</strong></td><td>${escapeDashboardText(model)}</td><td>${val(valR2)}</td><td>${val(persR2)}</td><td>${Number.isFinite(Number(valR2)) && Number.isFinite(Number(persR2)) ? (Number(valR2) >= Number(persR2) ? 'Above persistence' : 'Below persistence') : 'Not returned'}</td></tr>`;
+  }).join('');
+  return `<h3 class="tab-heading">Component Performance</h3>
+    <p class="tab-sub">Per-component performance exactly as returned by the model. Validation R² is compared with the persistence baseline when both are present; no value is estimated here.</p>
+    <div class="detail-table-wrap">
+      <table class="detail-table">
+        <thead><tr><th>Component</th><th>Model</th><th>Validation R²</th><th>Persistence R²</th><th>Assessment</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -1130,6 +1244,82 @@ function updateLoadingState(isLoading) {
     if (statusEl) statusEl.textContent = 'Loading data...';
   }
 }
+
+// ============================================================
+// DEVICE GPS DEFAULT LOCATION
+// ============================================================
+// On dashboard entry the device GPS is the default location. If location
+// is off, denied or unavailable, a banner says so plainly and offers a
+// retry — the dashboard never silently treats the default area as the
+// device location.
+let gpsLocationAttempted = false;
+
+function requestDeviceLocation() {
+  if (gpsLocationAttempted) return;
+  gpsLocationAttempted = true;
+  if (!('geolocation' in navigator)) {
+    showGpsBanner('Device location is not available in this browser.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      hideGpsBanner();
+      try {
+        const r = await reverseGeocode(lat, lng);
+        setLocation(lat, lng, formatPlaceName(r.address, r.display_name));
+      } catch (_) {
+        setLocation(lat, lng, `Device location (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+      }
+      setLocStatus('✔ Using your device location.', 'success');
+    },
+    (err) => {
+      const reason = err.code === 1
+        ? 'Location permission was denied.'
+        : err.code === 2
+          ? 'Device location is unavailable.'
+          : 'The location request timed out.';
+      showGpsBanner(reason + ' Turn location on to use your device GPS, or pick a place below.');
+    },
+    { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+  );
+}
+
+function showGpsBanner(message) {
+  const banner = document.getElementById('lxGpsBanner');
+  const text = document.getElementById('lxGpsBannerText');
+  if (!banner) return;
+  if (text) text.textContent = message + ' The dashboard is showing the default area until you choose a location.';
+  banner.classList.remove('hidden');
+}
+
+function hideGpsBanner() {
+  const banner = document.getElementById('lxGpsBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+(function wireGpsBanner() {
+  document.addEventListener('DOMContentLoaded', bindGpsBanner);
+  if (document.readyState !== 'loading') bindGpsBanner();
+  function bindGpsBanner() {
+    const retry = document.getElementById('lxGpsRetryBtn');
+    if (retry && !retry.dataset.bound) {
+      retry.dataset.bound = '1';
+      retry.addEventListener('click', () => { gpsLocationAttempted = false; requestDeviceLocation(); });
+    }
+    const choose = document.getElementById('lxGpsChoosePlaceBtn');
+    if (choose && !choose.dataset.bound) {
+      choose.dataset.bound = '1';
+      choose.addEventListener('click', () => toggleLocationPanel(true));
+    }
+    const dismiss = document.getElementById('lxGpsDismissBtn');
+    if (dismiss && !dismiss.dataset.bound) {
+      dismiss.dataset.bound = '1';
+      dismiss.addEventListener('click', hideGpsBanner);
+    }
+  }
+})();
 
 // ============================================================
 // LOCATION CHANGE — inline panel with geocoding

@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" />
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="data-extractor.css" />
   <!-- External Libraries -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
@@ -140,6 +141,24 @@
           </div>
         </div>
 
+
+        <!-- Device GPS location banner (shown when GPS is off / denied) -->
+        <div id="lxGpsBanner" class="lx-gps-banner hidden" role="alert">
+          <p id="lxGpsBannerText"></p>
+          <div class="lx-banner-actions">
+            <button class="btn primary small" id="lxGpsRetryBtn" type="button">Try again</button>
+            <button class="btn secondary small" id="lxGpsChoosePlaceBtn" type="button">Choose a place</button>
+            <button class="btn secondary small" id="lxGpsDismissBtn" type="button">Dismiss</button>
+          </div>
+        </div>
+
+        <!-- Data extractor entry point -->
+        <div class="lx-extractor-toolbar">
+          <button class="btn primary" id="lxOpenExtractorBtn" type="button">📥 Extract data</button>
+          <button class="btn secondary" id="lxApiKeysBtn" type="button">🔑 API keys</button>
+          <span class="lx-toolbar-note">Extract the 30 listed components for an area and date range, then send them to the model backend for analysis.</span>
+        </div>
+
         <!-- Inline Change-Location Panel -->
         <div id="locationPanel" class="location-panel hidden" aria-hidden="true">
           <div class="loc-tabs" role="tablist">
@@ -187,6 +206,88 @@
             <div class="score-status" id="hwiStatus">Analyzing...</div>
             <div class="hwi-card-cta">View HWI details</div>
           </button>
+        </div>
+
+
+        <!-- Data Extractor -->
+        <div id="lxExtractorPanel" class="lx-extractor-panel hidden">
+          <div class="lx-extractor-head">
+            <div>
+              <h3>Data Extractor</h3>
+              <p class="lx-panel-sub">Extracts the 30 listed components for the chosen area and date range, using the same sources the collection pipeline used. Nothing is invented — a component with no live evidence is reported as queued, needs-key, or unavailable.</p>
+            </div>
+            <button class="close-popup" id="lxCloseExtractorBtn" aria-label="Close extractor">✕</button>
+          </div>
+
+          <p class="lx-area-label" id="lxAreaLabel">No area selected yet.</p>
+
+          <fieldset class="lx-fieldset">
+            <legend>Area</legend>
+            <div class="lx-area-tabs" role="tablist">
+              <button class="lx-area-tab active" data-lx-area-tab="place" role="tab" aria-selected="true" type="button">🔎 By Place Name</button>
+              <button class="lx-area-tab" data-lx-area-tab="coords" role="tab" aria-selected="false" type="button">🧭 By Coordinates</button>
+              <button class="lx-area-tab" data-lx-area-tab="bbox" role="tab" aria-selected="false" type="button">🗺️ Bounding Box</button>
+            </div>
+            <div class="lx-area-pane active" data-lx-area-pane="place">
+              <div class="lx-input-row">
+                <input type="text" id="lxPlaceInput" placeholder="Search any city or place" autocomplete="off" />
+                <button class="btn primary small" id="lxPlaceSearchBtn" type="button">Search</button>
+              </div>
+              <div id="lxPlaceSuggestions" class="lx-suggestions hidden"></div>
+              <p class="lx-status-line" id="lxPlaceStatus"></p>
+              <p class="lx-hint">Powered by OpenStreetMap geocoding (Nominatim).</p>
+            </div>
+            <div class="lx-area-pane" data-lx-area-pane="coords">
+              <div class="lx-input-row">
+                <input type="number" id="lxCoordLat" placeholder="Latitude (-90 to 90)" step="0.0001" min="-90" max="90" />
+                <input type="number" id="lxCoordLng" placeholder="Longitude (-180 to 180)" step="0.0001" min="-180" max="180" />
+                <button class="btn primary small" id="lxCoordsApplyBtn" type="button">Apply</button>
+              </div>
+              <p class="lx-status-line" id="lxCoordsStatus"></p>
+            </div>
+            <div class="lx-area-pane" data-lx-area-pane="bbox">
+              <div class="lx-grid-2">
+                <div><label for="lxBboxMinLat">Min latitude</label><input type="number" id="lxBboxMinLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMaxLat">Max latitude</label><input type="number" id="lxBboxMaxLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMinLng">Min longitude</label><input type="number" id="lxBboxMinLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+                <div><label for="lxBboxMaxLng">Max longitude</label><input type="number" id="lxBboxMaxLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+              </div>
+              <div class="lx-input-row" style="margin-top:10px"><button class="btn primary small" id="lxBboxApplyBtn" type="button">Apply bounding box</button></div>
+              <p class="lx-status-line" id="lxBboxStatus"></p>
+            </div>
+          </fieldset>
+
+          <fieldset class="lx-fieldset">
+            <legend>Date range</legend>
+            <div class="lx-date-row">
+              <label><input type="radio" id="lxDateToday" name="lxDateMode" checked /> Present date (today)</label>
+              <label><input type="radio" id="lxDateRange" name="lxDateMode" /> Start and end date</label>
+            </div>
+            <div id="lxDateRangeInputs" class="lx-date-range hidden">
+              <div><label for="lxDateStart">Start date</label><input type="date" id="lxDateStart" /></div>
+              <div><label for="lxDateEnd">End date</label><input type="date" id="lxDateEnd" /></div>
+            </div>
+            <p class="lx-hint">Dates must be between 2015-01-01 and today.</p>
+            <div id="lxDateWarning" class="lx-warning hidden"></div>
+          </fieldset>
+
+          <div class="lx-actions">
+            <button class="btn primary" id="lxExtractBtn" type="button">Extract data</button>
+            <button class="btn secondary hidden" id="lxDownloadBundleBtn" type="button">Download bundle (JSON)</button>
+            <button class="btn secondary hidden" id="lxSendBackendBtn" type="button">Send to backend</button>
+            <button class="btn secondary" id="lxApiKeysBtnPanel" type="button">🔑 API keys</button>
+          </div>
+
+          <div class="lx-progress" aria-hidden="true"><span id="lxExtractProgressBar"></span></div>
+          <p class="lx-progress-label" id="lxExtractProgressLabel">0 of 30 components checked</p>
+          <p class="lx-summary" id="lxExtractSummary"></p>
+
+          <div class="lx-table-wrap">
+            <table class="lx-component-table">
+              <thead><tr><th>ID</th><th>Component</th><th>Source</th><th>Model</th><th>Status</th><th>Evidence</th></tr></thead>
+              <tbody id="lxComponentRows"></tbody>
+            </table>
+          </div>
         </div>
 
         <!-- 9 Composite Indices -->
@@ -398,6 +499,44 @@
     </section>
   </main>
 
+
+  <!-- API Keys Modal -->
+  <div id="lxKeyModal" class="lx-key-modal hidden" role="dialog" aria-modal="true" aria-labelledby="lxKeyModalTitle">
+    <div class="lx-key-backdrop"></div>
+    <div class="lx-key-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow">Data Extractor</span>
+          <h2 id="lxKeyModalTitle">API keys &amp; tokens</h2>
+        </div>
+        <button class="close-popup" id="lxKeyCloseBtn" aria-label="Close">✕</button>
+      </header>
+      <p class="lx-key-intro">The extractor needs these keys to reach the live sources. Leave a field blank to keep the key already stored in this browser.</p>
+      <div class="lx-key-field">
+        <label for="lxKeyOpenaq">OpenAQ API key</label>
+        <input type="password" id="lxKeyOpenaq" autocomplete="off" placeholder="Paste your OpenAQ API key" />
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusOpenaq">Not set</span></div>
+      </div>
+      <div class="lx-key-field">
+        <label for="lxKeyCams">CAMS ADS API key</label>
+        <input type="password" id="lxKeyCams" autocomplete="off" placeholder="Paste your CAMS ADS API key" />
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusCams">Not set</span></div>
+      </div>
+      <div class="lx-key-field">
+        <label for="lxKeyEarthdata">Earthdata token</label>
+        <input type="password" id="lxKeyEarthdata" autocomplete="off" placeholder="Paste your Earthdata token" />
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusEarthdata">Not set</span></div>
+      </div>
+      <p class="lx-key-privacy">Your keys never leave this browser except as a header to the provider that issued them (OpenAQ key → api.openaq.org only). The CAMS ADS key and the Earthdata token are never sent from the browser — CAMS ADS and MERRA-2 are not browser-callable, so those legs are queued for the backend. Keys are never logged.</p>
+      <div class="lx-key-actions">
+        <button class="btn primary" id="lxKeySaveBtn" type="button">Save keys</button>
+        <button class="btn secondary" id="lxKeyContinueBtn" type="button">Continue without keys</button>
+        <button class="btn secondary" id="lxKeyForgetBtn" type="button">Forget all keys</button>
+      </div>
+      <p class="lx-key-note" id="lxKeyNote"></p>
+    </div>
+  </div>
+
   <!-- Index Detail Modal -->
   <div id="indexDetailModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="indexModalTitle">
     <div class="index-modal-backdrop" data-close-modal></div>
@@ -422,6 +561,10 @@
         <button class="index-tab" data-tab="technology" role="tab" aria-selected="false">Technology</button>
         <button class="index-tab" data-tab="formula" role="tab" aria-selected="false">Formula</button>
         <button class="index-tab" data-tab="outlook" role="tab" aria-selected="false">Outlook</button>
+        <button class="index-tab" data-tab="suggestions" role="tab" aria-selected="false">Suggestions</button>
+        <button class="index-tab" data-tab="warnings" role="tab" aria-selected="false">Warnings</button>
+        <button class="index-tab" data-tab="predictions" role="tab" aria-selected="false">Predictions</button>
+        <button class="index-tab" data-tab="performance" role="tab" aria-selected="false">Performance</button>
       </div>
 
       <div class="index-tab-content" id="indexTabContent" role="tabpanel">
@@ -680,6 +823,7 @@
   <script src="analysis-client.js"></script>
   <script src="indexDetails.js"></script>
   <script src="dashboard.js"></script>
+  <script src="data-extractor.js"></script>
   <script src="nasa3d.js"></script>
   <script src="chatbot.js"></script>
   <script src="usecases.js"></script>
