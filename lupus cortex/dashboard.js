@@ -262,6 +262,7 @@ function renderDashboardUnavailable(requested) {
   });
   ['overallScore', 'hwiScore'].forEach(id => { const element = document.getElementById(id); if (element) element.textContent = '—'; });
   ['scoreStatus', 'hwiStatus'].forEach(id => { const element = document.getElementById(id); if (element) element.textContent = requested ? 'Awaiting model report' : 'Data unavailable'; });
+  renderTrendsSection(null);
 }
 
 function renderDashboardFromAnalysis(report) {
@@ -274,9 +275,11 @@ function renderDashboardFromAnalysis(report) {
   if (!Object.keys(indices).length) return renderDashboardUnavailable(false);
   const hwiScore = Number(report.hwi?.score);
   appState.healthData = { indices, overall_score: Number.isFinite(hwiScore) ? hwiScore : null, location: report.location, timestamp: report.time?.analyzed_at, data_quality: report.data_quality, hwi: Number.isFinite(hwiScore) ? report.hwi : null };
-  setBackendHistory(report.history?.indices);
+  setBackendHistory(report.history);
   selectedTrendKeys = null;
   renderDashboard(appState.healthData);
+  currentReport = report;
+  renderTrendsSection(report);
 }
 
 function statusIcon(s) {
@@ -833,20 +836,49 @@ const TREND_COLORS = [
 // Persist generated historical series across rerenders / toggles
 let historicalSeries = null;       // { [key]: number[] }, returned by the backend
 let historicalTimestamps = {};     // { [key]: ISO timestamp[] }
+let historicalCompSeries = null;   // { [component key]: number[] }, returned by the backend
+let historicalCompTimestamps = {}; // { [component key]: ISO timestamp[] }
 let selectedTrendKeys = null;      // Set<string>
 let selectedTrendDays = 15;
+let currentReport = null;          // last full model report, for the trends section
+
+/* Parse one history series, which may be a plain array of values or an
+ * object { values, timestamps }. A top-level shared timestamps array is
+ * used when the series carries none. Returns null when the series has no
+ * usable numeric values. */
+function parseHistorySeries(series, sharedTimestamps) {
+  const values = Array.isArray(series) ? series : series?.values;
+  const timestamps = Array.isArray(series?.timestamps) ? series.timestamps : (sharedTimestamps || []);
+  if (!Array.isArray(values) || !values.length) return null;
+  const numeric = values.map(Number);
+  if (!numeric.every(Number.isFinite)) return null;
+  if (timestamps.length && timestamps.length !== numeric.length) return { values: numeric, timestamps: numeric.map((_, index) => String(index)) };
+  return { values: numeric, timestamps: timestamps.length ? timestamps : numeric.map((_, index) => String(index)) };
+}
 
 function setBackendHistory(history) {
   historicalSeries = {};
   historicalTimestamps = {};
-  Object.entries(history || {}).forEach(([key, series]) => {
-    const values = Array.isArray(series) ? series : series?.values;
-    const timestamps = Array.isArray(series?.timestamps) ? series.timestamps : [];
-    if (!Array.isArray(values) || !values.length || (timestamps.length && timestamps.length !== values.length)) return;
-    const numeric = values.map(Number);
-    if (!numeric.every(Number.isFinite)) return;
-    historicalSeries[key] = numeric;
-    historicalTimestamps[key] = timestamps.length ? timestamps : numeric.map((_, index) => String(index));
+  historicalCompSeries = {};
+  historicalCompTimestamps = {};
+  const h = history || {};
+  const sharedTs = Array.isArray(h.timestamps) ? h.timestamps : [];
+  Object.entries(h.indices || {}).forEach(([key, series]) => {
+    const parsed = parseHistorySeries(series, sharedTs);
+    if (!parsed) return;
+    historicalSeries[key] = parsed.values;
+    historicalTimestamps[key] = parsed.timestamps;
+  });
+  const hwiParsed = parseHistorySeries(h.hwi, sharedTs);
+  if (hwiParsed) {
+    historicalSeries.HWI = hwiParsed.values;
+    historicalTimestamps.HWI = hwiParsed.timestamps;
+  }
+  Object.entries(h.components || {}).forEach(([key, series]) => {
+    const parsed = parseHistorySeries(series, sharedTs);
+    if (!parsed) return;
+    historicalCompSeries[key] = parsed.values;
+    historicalCompTimestamps[key] = parsed.timestamps;
   });
 }
 
@@ -1066,6 +1098,371 @@ function renderTrendKpis(indices, keys) {
     <div class="kpi"><span class="kpi-k">Best Trend</span><span class="kpi-v" style="color:#4ade80">${rising.key} ${rising.delta >= 0 ? '↗ +' : '↘ '}${rising.delta}</span></div>
     <div class="kpi"><span class="kpi-k">Weakest Trend</span><span class="kpi-v" style="color:#f87171">${falling.key} ${falling.delta >= 0 ? '↗ +' : '↘ '}${falling.delta}</span></div>
   `;
+}
+
+// ============================================================
+// COMPARISON & HISTORICAL TRENDS — detailed section below the
+// dashboard (index-wise and component-wise). Every number comes
+// only from the validated model report; nothing is plotted that
+// the report does not contain. When there is no report yet, the
+// whole section shows an honest "awaiting model" state.
+// ============================================================
+let trendsIndexSelected = null; // Set<string> of index keys (+ HWI)
+let trendsCompSelected = null;  // component key (canonical id preferred)
+
+function historyChange(series) {
+  if (!Array.isArray(series) || series.length < 2) return null;
+  return series[series.length - 1] - series[series.length - 2];
+}
+function formatChange(change) {
+  if (change == null) return '—';
+  const rounded = Math.round(change * 10) / 10;
+  return (rounded >= 0 ? '+' : '') + rounded;
+}
+function trendDateLabel(ts) {
+  if (ts == null || ts === '') return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function historyCoverageNote(seriesMap, tsMap) {
+  const keys = Object.keys(seriesMap || {}).filter(k => (seriesMap[k] || []).length);
+  if (!keys.length) return 'No historical series was returned by the model.';
+  const points = keys.reduce((n, k) => n + (seriesMap[k] || []).length, 0);
+  const allTs = [];
+  keys.forEach(k => (tsMap[k] || []).forEach(t => { const ms = Date.parse(t); if (Number.isFinite(ms)) allTs.push(ms); }));
+  if (!allTs.length) return points + ' historical points, as returned by the model.';
+  const min = new Date(Math.min.apply(null, allTs));
+  const max = new Date(Math.max.apply(null, allTs));
+  return 'History covers ' + trendDateLabel(min.toISOString()) + ' → ' + trendDateLabel(max.toISOString()) + ' (' + points + ' points), as returned by the model.';
+}
+function destroyTrendsCharts() {
+  ['lxCompare', 'lxTrendsIndex', 'lxTrendsComp'].forEach(k => {
+    if (dashboardCharts[k]) { dashboardCharts[k].destroy(); dashboardCharts[k] = null; }
+  });
+}
+
+function renderTrendsSection(report) {
+  const section = document.getElementById('lxTrendsSection');
+  if (!section) return;
+  const stateEl = document.getElementById('lxTrendsState');
+  const compareBlock = document.getElementById('lxCompareBlock');
+  const indexBlock = document.getElementById('lxTrendsIndexBlock');
+  const compBlock = document.getElementById('lxTrendsCompBlock');
+  const indices = report && report.indices ? report.indices : null;
+  const hasIndices = indices && Object.keys(indices).length > 0;
+  if (!hasIndices) {
+    if (stateEl) stateEl.textContent = 'Awaiting model report — comparison and trend charts appear here after the first analysis. Nothing is plotted until the model returns evidence.';
+    [compareBlock, indexBlock, compBlock].forEach(b => { if (b) b.classList.add('hidden'); });
+    destroyTrendsCharts();
+    return;
+  }
+  if (stateEl) {
+    const q = report.data_quality || {};
+    const coverage = q.coverage_pct ?? q.coverage ?? '—';
+    stateEl.textContent = 'Analysis ' + (report.analysis_id || '—') + ' · model ' + (report.model_version || '—') + ' · coverage ' + coverage + '% · ' + historyCoverageNote(historicalSeries, historicalTimestamps);
+  }
+  if (compareBlock) compareBlock.classList.remove('hidden');
+  if (indexBlock) indexBlock.classList.remove('hidden');
+  if (compBlock) compBlock.classList.remove('hidden');
+  renderCompareTable(report);
+  renderCompareChart(report);
+  renderTrendsIndexBlock(report);
+  renderTrendsCompBlock(report);
+}
+
+function compareRow(key, name, score, target, series) {
+  const change = historyChange(series);
+  const status = statusFromScore(score);
+  return '<tr><td><strong>' + escapeDashboardText(key) + '</strong> — ' + escapeDashboardText(name) + '</td>' +
+    '<td><strong class="' + statusToClass(status) + '">' + score + '</strong></td>' +
+    '<td>' + (target == null ? '—' : target) + '</td>' +
+    '<td class="' + (change == null ? '' : (change >= 0 ? 'normal' : 'high-alert')) + '">' + formatChange(change) + (change == null ? '' : ' pts') + '</td>' +
+    '<td><span class="summary-pill ' + statusToClass(status) + '">' + escapeDashboardText(status) + '</span></td></tr>';
+}
+
+function renderCompareTable(report) {
+  const body = document.getElementById('lxCompareTableBody');
+  if (!body) return;
+  const rows = [];
+  urbanIndices.forEach(def => {
+    const v = report.indices[def.key];
+    if (!v || !Number.isFinite(Number(v.score))) return;
+    rows.push(compareRow(def.key, def.name, Number(v.score), Number(v.target ?? def.target), historicalSeries[def.key]));
+  });
+  const hwi = report.hwi;
+  if (hwi && Number.isFinite(Number(hwi.score))) {
+    rows.push(compareRow('HWI', 'Human Wellbeing Index', Number(hwi.score), null, historicalSeries.HWI));
+  }
+  body.innerHTML = rows.join('');
+}
+
+function renderCompareChart(report) {
+  const ctx = document.getElementById('lxCompareChart');
+  if (!ctx || typeof Chart === 'undefined') return;
+  if (dashboardCharts.lxCompare) dashboardCharts.lxCompare.destroy();
+  const items = [];
+  urbanIndices.forEach(def => {
+    const v = report.indices[def.key];
+    if (v && Number.isFinite(Number(v.score))) items.push({ key: def.key, name: def.name, score: Number(v.score), target: Number(v.target ?? def.target) });
+  });
+  const hwi = report.hwi;
+  if (hwi && Number.isFinite(Number(hwi.score))) items.push({ key: 'HWI', name: 'Human Wellbeing Index', score: Number(hwi.score), target: null });
+  if (!items.length) return;
+  dashboardCharts.lxCompare = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: items.map(i => i.key),
+      datasets: [
+        { label: 'Current score', data: items.map(i => i.score), backgroundColor: items.map(i => statusColor(i.score)), borderWidth: 1 },
+        { label: 'Target', data: items.map(i => i.target), backgroundColor: 'rgba(148, 163, 184, 0.35)', borderColor: '#94a3b8', borderWidth: 1, borderDash: [4, 4] }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      onClick: (event, elements) => {
+        const el = elements && elements[0];
+        if (!el) return;
+        const key = items[el.index]?.key;
+        if (!key) return;
+        if (key === 'HWI') { openIndexDetail('HWI', report.hwi); return; }
+        openIndexDetail(key, report.indices[key]);
+      },
+      scales: {
+        y: { min: 0, max: 100, title: { display: true, text: 'Score (0–100)', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(148, 163, 184, 0.10)' } },
+        x: { ticks: { color: '#e5e7eb' }, grid: { display: false } }
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#e5e7eb', usePointStyle: true } },
+        tooltip: {
+          backgroundColor: 'rgba(5, 8, 22, 0.95)',
+          callbacks: {
+            title: tooltipItems => { const item = items[tooltipItems[0].dataIndex]; return item.key + ' — ' + item.name; },
+            label: ctx2 => ctx2.dataset.label + ': ' + ctx2.parsed.y
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderTrendsIndexBlock(report) {
+  const wrap = document.getElementById('lxTrendsIndexSelector');
+  const note = document.getElementById('lxTrendsIndexNote');
+  const keys = Object.keys(historicalSeries || {}).filter(k => (historicalSeries[k] || []).length);
+  if (!trendsIndexSelected || !trendsIndexSelected.size) {
+    trendsIndexSelected = new Set(keys.slice(0, 3));
+  }
+  trendsIndexSelected.forEach(k => { if (!keys.includes(k)) trendsIndexSelected.delete(k); });
+  if (!trendsIndexSelected.size && keys.length) trendsIndexSelected = new Set(keys.slice(0, 3));
+  if (wrap) {
+    wrap.innerHTML = keys.map((k, i) => {
+      const color = TREND_COLORS[i % TREND_COLORS.length];
+      const active = trendsIndexSelected.has(k);
+      return `<button class="trend-chip${active ? ' active' : ''}" data-lx-trend-key="${escapeDashboardText(k)}" style="--chip:${color}"><span class="chip-dot" style="background:${color}"></span>${escapeDashboardText(k)}</button>`;
+    }).join('');
+    wrap.querySelectorAll('[data-lx-trend-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const k = btn.dataset.lxTrendKey;
+        if (trendsIndexSelected.has(k)) {
+          if (trendsIndexSelected.size <= 1) return;
+          trendsIndexSelected.delete(k);
+        } else {
+          trendsIndexSelected.add(k);
+        }
+        btn.classList.toggle('active');
+        drawTrendsIndexChart(report);
+      });
+    });
+  }
+  if (note) note.textContent = keys.length ? historyCoverageNote(historicalSeries, historicalTimestamps) : 'The model did not return historical index series for this analysis.';
+  drawTrendsIndexChart(report);
+}
+
+function drawTrendsIndexChart(report) {
+  const ctx = document.getElementById('lxTrendsIndexChart');
+  if (!ctx || typeof Chart === 'undefined') return;
+  if (dashboardCharts.lxTrendsIndex) dashboardCharts.lxTrendsIndex.destroy();
+  const keys = Array.from(trendsIndexSelected || []);
+  if (!keys.length) return;
+  // The backend returns aligned series; the longest timestamp list is the x axis.
+  let labels = [];
+  keys.forEach(k => { const ts = historicalTimestamps[k] || []; if (ts.length > labels.length) labels = ts; });
+  const datasets = [];
+  keys.forEach(k => {
+    const color = TREND_COLORS[Object.keys(historicalSeries).indexOf(k) % TREND_COLORS.length];
+    datasets.push({ label: k, data: historicalSeries[k], borderColor: color, backgroundColor: color + '22', borderWidth: 2.5, tension: 0.35, pointRadius: 3, pointBackgroundColor: color, fill: false });
+    const target = k === 'HWI'
+      ? null
+      : (report.indices[k] && Number(report.indices[k].target)) || (urbanIndices.find(d => d.key === k) || {}).target;
+    if (Number.isFinite(Number(target))) {
+      datasets.push({ label: k + ' target', data: historicalSeries[k].map(() => Number(target)), borderColor: color, borderDash: [6, 6], borderWidth: 1.5, pointRadius: 0, fill: false });
+    }
+  });
+  dashboardCharts.lxTrendsIndex = new Chart(ctx, {
+    type: 'line',
+    data: { labels: labels.map(t => trendDateLabel(t)), datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        y: { min: 0, max: 100, title: { display: true, text: 'Score (0–100)', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(148, 163, 184, 0.10)' } },
+        x: { title: { display: true, text: 'Date', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { display: false } }
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#e5e7eb', usePointStyle: true } },
+        tooltip: { backgroundColor: 'rgba(5, 8, 22, 0.95)' }
+      }
+    }
+  });
+}
+
+/* Per-component rows for the comparison table and the component trend
+ * view, built from report.indices[*].components (latest values) and
+ * report.components (model performance). */
+function collectReportComponents(report) {
+  const out = [];
+  const perf = (report.components && typeof report.components === 'object') ? report.components : {};
+  Object.entries(report.indices || {}).forEach(([indexKey, idx]) => {
+    (idx.components || []).forEach(c => {
+      const canonicalId = c.canonicalId || c.id || null;
+      const name = c.name || c.id || canonicalId || 'Component';
+      out.push({
+        key: canonicalId || name,
+        canonicalId,
+        name,
+        indexKey,
+        indexName: idx.name || indexKey,
+        score: Number.isFinite(Number(c.score)) ? Number(c.score) : null,
+        unit: c.unit || '',
+        direction: c.direction || '',
+        weight: Number.isFinite(Number(c.weight)) ? Number(c.weight) : null,
+        perf: perf[canonicalId] || perf[name] || perf[c.id] || null
+      });
+    });
+  });
+  return out;
+}
+function findCompSeries(comp) {
+  const candidates = [comp.canonicalId, comp.name].filter(Boolean);
+  for (let i = 0; i < candidates.length; i++) {
+    if (historicalCompSeries && historicalCompSeries[candidates[i]]) {
+      return { key: candidates[i], values: historicalCompSeries[candidates[i]], timestamps: historicalCompTimestamps[candidates[i]] || [] };
+    }
+  }
+  return null;
+}
+function findCompForecast(report, comp) {
+  const fc = report.forecasts || {};
+  const candidates = [comp.canonicalId, comp.name, comp.key].filter(Boolean);
+  for (let i = 0; i < candidates.length; i++) {
+    const v = fc[candidates[i]];
+    if (v === undefined) continue;
+    if (Array.isArray(v)) return v.length ? 'Latest predicted: ' + v[v.length - 1] + ' (' + v.length + ' horizon step(s))' : 'Returned, empty';
+    if (v && typeof v === 'object') return JSON.stringify(v);
+    return String(v);
+  }
+  return null;
+}
+function renderCompDetail(comp, report) {
+  const rows = [];
+  rows.push('<tr><td>Latest score</td><td>' + (comp.score == null ? 'Not returned' : '<strong>' + comp.score + '</strong> ' + escapeDashboardText(comp.unit || '')) + '</td></tr>');
+  rows.push('<tr><td>Direction</td><td>' + escapeDashboardText(comp.direction || '—') + '</td></tr>');
+  rows.push('<tr><td>Weight in ' + escapeDashboardText(comp.indexKey) + '</td><td>' + (comp.weight == null ? '—' : comp.weight + '%') + '</td></tr>');
+  if (comp.perf) {
+    const valR2 = comp.perf.val_r2 ?? comp.perf.validation_r2 ?? comp.perf.r2_val ?? comp.perf.r2;
+    const persR2 = comp.perf.persistence_r2 ?? comp.perf.baseline_r2 ?? comp.perf.persistence;
+    rows.push('<tr><td>Validation R²</td><td>' + (Number.isFinite(Number(valR2)) ? Number(valR2).toFixed(3) : 'Not returned') + '</td></tr>');
+    rows.push('<tr><td>Persistence R²</td><td>' + (Number.isFinite(Number(persR2)) ? Number(persR2).toFixed(3) : 'Not returned') + '</td></tr>');
+    rows.push('<tr><td>Model</td><td>' + escapeDashboardText(comp.perf.model || comp.perf.algorithm || '—') + '</td></tr>');
+  }
+  const fc = findCompForecast(report, comp);
+  if (fc) rows.push('<tr><td>Forecast</td><td>' + escapeDashboardText(fc) + '</td></tr>');
+  const s = findCompSeries(comp);
+  const note = (!s || s.values.length < 2)
+    ? '<p class="tab-sub">No historical series for this component was returned by the model — the chart above is empty; the latest value and forecast (when returned) are shown here.</p>'
+    : '<p class="tab-sub">Historical series as returned by the model (' + s.values.length + ' points).</p>';
+  return '<h4 class="sub-heading">' + escapeDashboardText((comp.canonicalId ? comp.canonicalId + ' · ' : '') + comp.name) + '</h4>' + note +
+    '<div class="detail-table-wrap"><table class="detail-table"><tbody>' + rows.join('') + '</tbody></table></div>';
+}
+
+function renderTrendsCompBlock(report) {
+  const comps = collectReportComponents(report);
+  const body = document.getElementById('lxCompareCompTableBody');
+  if (body) {
+    body.innerHTML = comps.map(c => {
+      const s = findCompSeries(c);
+      const change = s ? historyChange(s.values) : null;
+      const status = c.score == null ? 'Data unavailable' : statusFromScore(c.score);
+      return '<tr><td><strong>' + escapeDashboardText((c.canonicalId ? c.canonicalId + ' · ' : '') + c.name) + '</strong></td>' +
+        '<td>' + escapeDashboardText(c.indexKey) + '</td>' +
+        '<td>' + (c.score == null ? '—' : '<strong class="' + statusToClass(status) + '">' + c.score + '</strong>') + '</td>' +
+        '<td class="' + (change == null ? '' : (change >= 0 ? 'normal' : 'high-alert')) + '">' + formatChange(change) + '</td>' +
+        '<td><span class="summary-pill ' + statusToClass(status) + '">' + escapeDashboardText(status) + '</span></td>' +
+        '<td>' + escapeDashboardText(c.unit || '—') + '</td></tr>';
+    }).join('') || '<tr><td colspan="6">No per-component values were returned by the model for this analysis.</td></tr>';
+  }
+  const select = document.getElementById('lxTrendsCompSelect');
+  if (select) {
+    const byIndex = {};
+    comps.forEach(c => { (byIndex[c.indexKey] = byIndex[c.indexKey] || []).push(c); });
+    select.innerHTML = Object.keys(byIndex).map(ik =>
+      '<optgroup label="' + escapeDashboardText(ik) + ' — ' + escapeDashboardText(byIndex[ik][0].indexName) + '">' +
+      byIndex[ik].map(c => '<option value="' + escapeDashboardText(c.key) + '">' + escapeDashboardText((c.canonicalId ? c.canonicalId + ' · ' : '') + c.name) + '</option>').join('') +
+      '</optgroup>'
+    ).join('');
+    if (!trendsCompSelected || !comps.some(c => c.key === trendsCompSelected)) {
+      const withHistory = comps.find(c => findCompSeries(c));
+      trendsCompSelected = withHistory ? withHistory.key : (comps[0] ? comps[0].key : null);
+    }
+    if (trendsCompSelected) select.value = trendsCompSelected;
+    select.onchange = () => { trendsCompSelected = select.value; drawTrendsCompChart(report); };
+  }
+  const note = document.getElementById('lxTrendsCompNote');
+  if (note) {
+    const withHist = comps.filter(c => findCompSeries(c)).length;
+    note.textContent = withHist
+      ? withHist + ' of ' + comps.length + ' components have a historical series in this report; the rest show their latest value and forecast below.'
+      : 'The model did not return per-component historical series for this analysis — latest values and forecasts are shown below.';
+  }
+  drawTrendsCompChart(report);
+}
+
+function drawTrendsCompChart(report) {
+  const ctx = document.getElementById('lxTrendsCompChart');
+  const detail = document.getElementById('lxTrendsCompDetail');
+  if (dashboardCharts.lxTrendsComp) { dashboardCharts.lxTrendsComp.destroy(); dashboardCharts.lxTrendsComp = null; }
+  const comps = collectReportComponents(report);
+  const comp = comps.find(c => c.key === trendsCompSelected) || comps[0];
+  if (!comp) {
+    if (detail) detail.innerHTML = '<p class="tab-sub">No component selected.</p>';
+    return;
+  }
+  if (detail) detail.innerHTML = renderCompDetail(comp, report);
+  if (!ctx || typeof Chart === 'undefined') return;
+  const s = findCompSeries(comp);
+  if (!s || s.values.length < 2) return; // no chart — the detail panel says so plainly
+  dashboardCharts.lxTrendsComp = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: s.timestamps.map(t => trendDateLabel(t)),
+      datasets: [{ label: (comp.canonicalId || comp.name), data: s.values, borderColor: '#38bdf8', backgroundColor: 'rgba(56, 189, 248, 0.15)', borderWidth: 2.5, tension: 0.35, pointRadius: 3, fill: true }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      scales: {
+        y: { title: { display: true, text: comp.unit || 'Value', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { color: 'rgba(148, 163, 184, 0.10)' } },
+        x: { title: { display: true, text: 'Date', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { display: false } }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(5, 8, 22, 0.95)' }
+      }
+    }
+  });
 }
 
 // ---- Trend Insights Modal ----
@@ -1361,6 +1758,12 @@ function setLocation(lat, lng, displayName) {
 
   // Clear any previous model history before requesting the canonical location.
   historicalSeries = null;
+  historicalCompSeries = null;
+  historicalCompTimestamps = {};
+  currentReport = null;
+  trendsIndexSelected = null;
+  trendsCompSelected = null;
+  renderTrendsSection(null);
 
   const label = document.getElementById('currentLocation');
   if (label) {

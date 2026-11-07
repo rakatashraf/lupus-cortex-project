@@ -160,6 +160,11 @@
             <button class="btn secondary small" id="lxKeyNoticeDismissBtn" type="button">Dismiss</button>
           </div>
         </div>
+        <!-- Backend auto-send notice (shown when a pending bundle is sent automatically) -->
+        <div id="lxBackendNotice" class="lx-backend-notice hidden" role="status">
+          <p id="lxBackendNoticeText"></p>
+          <button class="btn secondary small" id="lxBackendNoticeDismissBtn" type="button">Dismiss</button>
+        </div>
 
         <!-- Data extractor entry point -->
         <div class="lx-extractor-toolbar">
@@ -348,6 +353,60 @@
               <canvas id="lineChart"></canvas>
             </div>
             <div class="chart-kpis" id="trendKpis"><!-- populated by JS --></div>
+          </div>
+        </div>
+
+        <!-- Index comparison & historical trends (rendered by dashboard.js from the model report; empty until the first analysis) -->
+        <div id="lxTrendsSection" class="lx-trends-section">
+          <h2>Index comparison &amp; historical trends</h2>
+          <p id="lxTrendsState" class="lx-trends-state">Awaiting model report — comparison and trend charts appear here after the first analysis. Nothing is plotted until the model returns evidence.</p>
+
+          <div id="lxCompareBlock" class="lx-trends-block hidden">
+            <h3>Index comparison</h3>
+            <p class="chart-sub">Current score against target, and change vs the previous period from the report's own history. Click a bar for full index details.</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxCompareChart"></canvas>
+            </div>
+            <div class="detail-table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr><th>Index</th><th>Current score</th><th>Target</th><th>Change vs previous period</th><th>Status</th></tr>
+                </thead>
+                <tbody id="lxCompareTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="lxTrendsIndexBlock" class="lx-trends-block hidden">
+            <h3>Historical trends — index-wise</h3>
+            <p class="chart-sub">Index and HWI scores over the history window returned by the model. Dashed lines are the index targets.</p>
+            <div id="lxTrendsIndexSelector" class="trend-selector" role="group" aria-label="Select indices to display">
+              <!-- populated by JS -->
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxTrendsIndexChart"></canvas>
+            </div>
+            <p id="lxTrendsIndexNote" class="lx-trends-note"></p>
+          </div>
+
+          <div id="lxTrendsCompBlock" class="lx-trends-block hidden">
+            <h3>Historical trends — component-wise</h3>
+            <p class="chart-sub">Per-component values over time, from the report's own history. Components without a returned history series show their latest value and forecast below instead — nothing is invented.</p>
+            <div class="detail-table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr><th>Component</th><th>Index</th><th>Latest score</th><th>Change vs previous period</th><th>Status</th><th>Unit</th></tr>
+                </thead>
+                <tbody id="lxCompareCompTableBody"></tbody>
+              </table>
+            </div>
+            <label class="lx-comp-select-label" for="lxTrendsCompSelect">Component trend</label>
+            <select id="lxTrendsCompSelect" class="lx-comp-select"></select>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxTrendsCompChart"></canvas>
+            </div>
+            <p id="lxTrendsCompNote" class="lx-trends-note"></p>
+            <div id="lxTrendsCompDetail"></div>
           </div>
         </div>
       </div>

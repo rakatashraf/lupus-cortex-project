@@ -209,3 +209,18 @@
 .lx-key-field .lx-key-stored span.lx-key-status--expired, .lx-key-panel-status span.lx-key-status--expired,
 .lx-key-field .lx-key-stored span.lx-key-status--invalid, .lx-key-panel-status span.lx-key-status--invalid { color: #f87171; }
 .lx-key-field .lx-key-stored span.lx-key-status--missing, .lx-key-panel-status span.lx-key-status--missing { color: #9ca3af; }
+
+/* ---- Backend auto-send notice (green; the key notice above is red) ---- */
+.lx-backend-notice { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin: 12px 0 0; padding: 12px 14px; border: 1px solid rgba(34, 197, 94, 0.55); border-radius: 12px; background: rgba(34, 197, 94, 0.12); color: #bbf7d0; font-size: 14px; }
+.lx-backend-notice p { margin: 0; flex: 1 1 320px; }
+
+/* ---- Index comparison & historical trends section (below the dashboard) ---- */
+.lx-trends-section { margin: 28px 0 8px; }
+.lx-trends-section h2 { font-size: 22px; margin: 0 0 6px; color: #e5e7eb; }
+.lx-trends-state { font-size: 14px; color: #9ca3af; margin: 0 0 4px; }
+.lx-trends-block { margin-top: 22px; }
+.lx-trends-block h3 { font-size: 17px; margin: 0 0 6px; color: #e5e7eb; }
+.lx-trends-note { font-size: 13px; color: #9ca3af; margin: 10px 0 0; }
+.lx-comp-select-label { display: block; font-size: 13px; font-weight: 600; color: #cbd5e1; margin: 16px 0 6px; }
+.lx-comp-select { width: 100%; max-width: 520px; padding: 9px 12px; border-radius: 10px; border: 1px solid rgba(148, 163, 184, 0.35); background: rgba(2, 6, 23, 0.65); color: #e5e7eb; font-size: 14px; }
+.lx-trends-section .chart-canvas-wrap { margin-top: 12px; }

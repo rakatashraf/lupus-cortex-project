@@ -24,8 +24,21 @@
  *    browser-callable, so those legs are queued for the backend and the
  *    CAMS key is checked by the backend when it runs.
  *  - The model backend is not built yet. When no backend base is
- *    configured, the extracted bundle is offered as a downloadable JSON and
- *    the UI says so honestly instead of pretending an analysis happened.
+ *    configured, the finished bundle is saved as the pending bundle in
+ *    this browser's localStorage (key: lupus_cortex_pending_bundle —
+ *    one bundle, the latest extraction wins) and offered as a
+ *    downloadable JSON, and a watcher checks every 60 s whether the
+ *    backend has come online; when it has, the bundle is sent
+ *    automatically. When a backend IS configured, the bundle is sent
+ *    automatically right after extraction finishes — no manual click —
+ *    and analysis is requested through the existing
+ *    window.CortexAnalysis.request flow. A failed send never drops the
+ *    bundle: it stays pending and is retried on the next watcher tick.
+ *  - Speed: component legs run with bounded concurrency (6 at a time),
+ *    CMR collection lookups are cached once per page session, identical
+ *    granule requests are deduplicated, and the checklist is rendered
+ *    once at the end instead of once per component. The extraction
+ *    duration is shown in the summary.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -129,10 +142,21 @@
   var extracting = false;
   var pendingExtractAfterKeys = false;
   var lastBundle = null;
+  var lastExtractionMs = null;
+  var lastCountsSummary = '';
   var selectedArea = null; /* { mode:'point'|'bbox', lat, lng, name, bbox:[minLng,minLat,maxLng,maxLat] } */
-  var cmrCache = {};
+  var cmrCache = {}; /* granule results, keyed conceptId|bbox|start|end — kept for the whole page session: granule counts for a fixed area/dates are deterministic */
+  var cmrCollectionCache = {}; /* collection concept ids, keyed short_name|version — looked up once per page session */
   var sessionVerified = {}; /* provider -> true once live-verified this page session */
   var expiryTickTimer = null;
+  /* Auto-send state: one pending bundle (latest extraction wins). */
+  var pendingBundleKey = 'lupus_cortex_pending_bundle';
+  var backendHealthPath = '/api/health';
+  var backendWatchMs = 60000;
+  var backendHealthTimeoutMs = 5000;
+  var extractionConcurrency = 6;
+  var backendWatcherTimer = null;
+  var backendKnownReachable = false;
 
   /* ------------------------------------------------------------------ */
   /* 4. Small helpers                                                     */
@@ -668,34 +692,50 @@
       });
   }
 
+  /* NASA CMR leg. Collection lookups are cached once per page session by
+   * short_name+version (C12/C13/C18/C26 share MCD12Q1 061; C29a/C29b share
+   * SRTMGL1 003, so one lookup serves all of them), and granule results
+   * are cached by conceptId|bbox|dates. Only deterministic outcomes
+   * ('ok', 'not-found') are kept — a failed request is retried next
+   * time instead of caching the failure. */
   function cmrLeg(componentId, area, dates) {
     var spec = CMR_COLLECTIONS[componentId];
     if (!spec) return Promise.resolve({ status: 'queued', evidence: 'No browser CMR collection for this component; queued for backend.' });
-    var cacheKey = componentId + '|' + area.bbox.join(',') + '|' + dates.start + '|' + dates.end;
-    if (cmrCache[cacheKey]) return Promise.resolve(cmrCache[cacheKey]);
-    var collUrl = CMR_BASE + '/collections.json?short_name=' + encodeURIComponent(spec.short_name) +
-      '&version=' + encodeURIComponent(spec.version) + '&page_size=5';
-    var result = fetchJson(collUrl, {}, 20000)
-      .then(function (data) {
-        var entries = (data.feed && data.feed.entry) || [];
-        if (!entries.length) {
-          return { status: 'not-found', evidence: 'Collection ' + spec.short_name + ' v' + spec.version + ' not found in NASA CMR.' };
-        }
-        var conceptId = entries[0].id;
-        var granUrl = CMR_BASE + '/granules.json?concept_id=' + encodeURIComponent(conceptId) +
-          '&bounding_box=' + area.bbox.join(',') +
-          '&temporal=' + dates.start + 'T00:00:00Z,' + dates.end + 'T23:59:59Z&page_size=1';
-        return fetchJson(granUrl, {}, 25000).then(function (gdata) {
-          var hits = typeof gdata.hits === 'number' ? gdata.hits : ((gdata.feed && gdata.feed.entry) || []).length;
-          if (!hits) return { status: 'not-found', evidence: '0 granules of ' + spec.short_name + ' v' + spec.version + ' in the area and date range.' };
-          return { status: 'ok', evidence: hits + ' granules of ' + spec.short_name + ' v' + spec.version + ' in the area and date range.', raw: { collection: spec.short_name, version: spec.version, concept_id: conceptId, hits: hits } };
+    var collKey = spec.short_name + '|' + spec.version;
+    var collPromise = cmrCollectionCache[collKey];
+    if (!collPromise) {
+      var collUrl = CMR_BASE + '/collections.json?short_name=' + encodeURIComponent(spec.short_name) +
+        '&version=' + encodeURIComponent(spec.version) + '&page_size=5';
+      collPromise = fetchJson(collUrl, {}, 20000)
+        .then(function (data) {
+          var entries = (data.feed && data.feed.entry) || [];
+          return { id: entries.length ? entries[0].id : null };
+        })
+        .catch(function (err) {
+          delete cmrCollectionCache[collKey];
+          return { error: (err && err.message) || 'network error' };
         });
-      })
-      .catch(function (err) {
+      cmrCollectionCache[collKey] = collPromise;
+    }
+    return collPromise.then(function (coll) {
+      if (coll.error) return { status: 'error', evidence: 'NASA CMR request failed (' + coll.error + ').' };
+      if (!coll.id) return { status: 'not-found', evidence: 'Collection ' + spec.short_name + ' v' + spec.version + ' not found in NASA CMR.' };
+      var granKey = coll.id + '|' + area.bbox.join(',') + '|' + dates.start + '|' + dates.end;
+      if (cmrCache[granKey]) return cmrCache[granKey];
+      var granUrl = CMR_BASE + '/granules.json?concept_id=' + encodeURIComponent(coll.id) +
+        '&bounding_box=' + area.bbox.join(',') +
+        '&temporal=' + dates.start + 'T00:00:00Z,' + dates.end + 'T23:59:59Z&page_size=1';
+      var result = fetchJson(granUrl, {}, 25000).then(function (gdata) {
+        var hits = typeof gdata.hits === 'number' ? gdata.hits : ((gdata.feed && gdata.feed.entry) || []).length;
+        if (!hits) return { status: 'not-found', evidence: '0 granules of ' + spec.short_name + ' v' + spec.version + ' in the area and date range.' };
+        return { status: 'ok', evidence: hits + ' granules of ' + spec.short_name + ' v' + spec.version + ' in the area and date range.', raw: { collection: spec.short_name, version: spec.version, concept_id: coll.id, hits: hits } };
+      }).catch(function (err) {
+        delete cmrCache[granKey];
         return { status: 'error', evidence: 'NASA CMR request failed (' + (err && err.message ? err.message : 'network error') + ').' };
       });
-    cmrCache[cacheKey] = result;
-    return result;
+      cmrCache[granKey] = result;
+      return result;
+    });
   }
 
   function worldpopLeg(area) {
@@ -871,7 +911,7 @@
     if (errors.length) { setSummary(errors.join(' '), 'error'); return; }
 
     extracting = true;
-    cmrCache = {};
+    var extractionStartedAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     var results = {};
     var done = 0;
     var total = LUPUS_COMPONENTS.length;
@@ -885,25 +925,60 @@
       worldpop: worldpopLeg(area)
     };
 
-    var jobs = LUPUS_COMPONENTS.map(function (c) {
-      return extractComponent(c.id, area, dates, shared)
-        .then(function (res) { results[c.id] = res; })
-        .catch(function (err) { results[c.id] = { status: 'error', evidence: 'Extraction failed (' + (err && err.message ? err.message : 'unknown error') + ').' }; })
-        .finally(function () { done += 1; renderChecklist(results); renderProgress(done, total); });
+    /* Bounded concurrency (6 at a time): the 30 component legs run in
+     * parallel but do not fire all at once. The checklist is rendered
+     * once at the end — only the progress bar moves per component. */
+    var tasks = LUPUS_COMPONENTS.map(function (c) {
+      return function () {
+        return extractComponent(c.id, area, dates, shared)
+          .then(function (res) { results[c.id] = res; })
+          .catch(function (err) { results[c.id] = { status: 'error', evidence: 'Extraction failed (' + (err && err.message ? err.message : 'unknown error') + ').' }; })
+          .finally(function () { done += 1; renderProgress(done, total); });
+      };
     });
 
-    Promise.all(jobs).then(function () {
+    runWithConcurrency(tasks, extractionConcurrency).then(function () {
       extracting = false;
+      var nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      lastExtractionMs = Math.round(nowMs - extractionStartedAt);
       var counts = { ok: 0, queued: 0, 'needs-key': 0, unavailable: 0, 'not-found': 0, error: 0 };
       Object.keys(results).forEach(function (id) { counts[results[id].status] = (counts[results[id].status] || 0) + 1; });
       lastBundle = buildBundle(area, dates, results);
-      var summary = 'Extraction finished: ' + counts.ok + ' available, ' + counts.queued + ' queued for backend, ' +
+      lastCountsSummary = 'Extraction finished in ' + (lastExtractionMs / 1000).toFixed(1) + ' s: ' + counts.ok + ' available, ' + counts.queued + ' queued for backend, ' +
         counts['needs-key'] + ' need an API key, ' + counts.unavailable + ' unavailable, ' + counts['not-found'] + ' not found in source, ' +
         counts.error + ' errors. Derived C14 and C16 are computed from C13 and C15, not extracted.';
-      setSummary(summary, counts.error ? 'warn' : 'info');
+      setSummary(lastCountsSummary, counts.error ? 'warn' : 'info');
+      renderChecklist(results);
+      renderProgress(done, total);
       var dl = $('lxDownloadBundleBtn'); if (dl) dl.classList.remove('hidden');
       var send = $('lxSendBackendBtn'); if (send) send.classList.remove('hidden');
       window.dispatchEvent(new CustomEvent('cortex:extraction-ready', { detail: lastBundle }));
+      autoSendBundle(lastBundle);
+    });
+  }
+
+  /* Run task functions (each returning a promise) with at most `limit`
+   * in flight. Resolves when every task has settled. */
+  function runWithConcurrency(tasks, limit) {
+    var max = Math.max(1, limit || extractionConcurrency);
+    var index = 0;
+    var inFlight = 0;
+    var done = 0;
+    return new Promise(function (resolve) {
+      if (!tasks.length) { resolve(); return; }
+      function launch() {
+        while (inFlight < max && index < tasks.length) {
+          var task = tasks[index++];
+          inFlight++;
+          task().finally(function () {
+            inFlight--;
+            done++;
+            if (done === tasks.length) { resolve(); return; }
+            launch();
+          });
+        }
+      }
+      launch();
     });
   }
 
@@ -957,22 +1032,37 @@
     });
   }
 
-  function sendToBackend() {
-    if (!lastBundle) return;
-    var apiBase = String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, '');
-    var point = currentPoint();
-    if (!apiBase) {
-      setSummary('Model backend not connected yet — the model will be added later. The extraction bundle is ready to download as JSON.', 'warn');
-      return;
-    }
-    setSummary('Sending the extraction bundle to the backend…', 'info');
-    /* The bundle travels on POST /api/extract; the analysis itself still
-     * flows through the existing window.CortexAnalysis.request call, so
-     * analysis-client.js is left untouched. */
-    fetch(apiBase + '/api/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lastBundle)
+  /* ------------------------------------------------------------------ */
+  /* 10b. Auto-send, pending bundle, backend watcher                     */
+  /* ------------------------------------------------------------------ */
+  function apiBaseNow() { return String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, ''); }
+
+  function savePendingBundle(bundle) {
+    try { localStorage.setItem(pendingBundleKey, JSON.stringify(bundle)); } catch (_) { /* storage unavailable: the download is still offered */ }
+  }
+  function loadPendingBundle() {
+    try {
+      var raw = localStorage.getItem(pendingBundleKey);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      return parsed && parsed.kind === 'lupus-cortex-extraction' ? parsed : null;
+    } catch (_) { return null; }
+  }
+  function clearPendingBundle() {
+    try { localStorage.removeItem(pendingBundleKey); } catch (_) { /* ignore */ }
+  }
+
+  /* POST a bundle to /api/extract. Resolves true only when the backend
+   * accepted it (any 2xx). Applies any key_status the backend returns. */
+  function postBundleToBackend(bundle) {
+    var base = apiBaseNow();
+    if (!base) return Promise.resolve(false);
+    return Promise.resolve().then(function () {
+      return fetch(base + '/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bundle)
+      });
     })
       .then(function (res) {
         return res.text().then(function (text) {
@@ -984,14 +1074,110 @@
       .then(function (out) {
         if (!out.res.ok) throw new Error('Backend returned HTTP ' + out.res.status);
         applyBackendKeyStatus(out.data);
-        setSummary('Extraction bundle sent to the backend. Requesting analysis for the selected area…', 'info');
-        if (point && window.CortexAnalysis && typeof window.CortexAnalysis.request === 'function') {
-          window.CortexAnalysis.request(point);
-        }
-      })
-      .catch(function (err) {
-        setSummary('Could not reach the backend (' + (err && err.message ? err.message : 'network error') + '). The bundle is still available to download as JSON.', 'error');
+        return true;
       });
+  }
+
+  /* Auto-send: the default path after an extraction finishes. With a
+   * backend configured the bundle goes out immediately and analysis is
+   * requested through the existing window.CortexAnalysis.request flow —
+   * no manual click. Without one, the bundle is saved as the pending
+   * bundle and the watcher starts. A failed POST keeps the pending
+   * bundle and retries on the next watcher tick — a bundle is never
+   * silently dropped. */
+  function autoSendBundle(bundle) {
+    if (!bundle) return Promise.resolve(false);
+    var base = apiBaseNow();
+    if (!base) {
+      savePendingBundle(bundle);
+      startBackendWatcher();
+      setSummary(lastCountsSummary + ' Model backend not connected yet — the model will be added later. The bundle is saved in this browser and will be sent automatically when the backend comes online. Download it as JSON in the meantime.', 'warn');
+      return Promise.resolve(false);
+    }
+    setSummary(lastCountsSummary + ' Sending the extraction bundle to the backend automatically…', 'info');
+    return postBundleToBackend(bundle).then(function () {
+      clearPendingBundle();
+      stopBackendWatcher();
+      setSummary(lastCountsSummary + ' Extraction bundle sent to the backend automatically. Requesting analysis for the selected area…', 'info');
+      showBackendNotice('Extraction bundle sent to the backend automatically.');
+      requestAnalysisForCurrentPoint();
+      return true;
+    }).catch(function (err) {
+      savePendingBundle(bundle);
+      startBackendWatcher();
+      setSummary(lastCountsSummary + ' Could not reach the backend (' + (err && err.message ? err.message : 'network error') + '). The bundle is saved in this browser and will be sent automatically when the backend is reachable.', 'error');
+      return false;
+    });
+  }
+
+  function requestAnalysisForCurrentPoint() {
+    var point = currentPoint();
+    if (point && window.CortexAnalysis && typeof window.CortexAnalysis.request === 'function') {
+      window.CortexAnalysis.request(point);
+    }
+  }
+
+  /* Manual "Send to backend" — same path as auto-send (retry/fallback). */
+  function sendToBackend() {
+    if (!lastBundle) return Promise.resolve(false);
+    return autoSendBundle(lastBundle);
+  }
+
+  /* Backend watcher: while a bundle is pending, check every 60 s whether
+   * the backend is reachable. Any HTTP response counts as reachable —
+   * even a 404, which only proves the server is up (the /api/health
+   * endpoint itself may not exist on the future backend); only a
+   * network error or timeout counts as offline. On reachable + pending
+   * bundle, the bundle is sent, cleared, and the user is told. */
+  function checkBackendHealth() {
+    var base = apiBaseNow();
+    if (!base) return Promise.resolve(false);
+    return Promise.resolve().then(function () {
+      return fetchWithTimeout(base + backendHealthPath, { method: 'GET' }, backendHealthTimeoutMs);
+    }).then(function () {
+      backendKnownReachable = true;
+      return true;
+    }).catch(function () {
+      backendKnownReachable = false;
+      return false;
+    });
+  }
+  function checkBackendAndFlush() {
+    var pending = loadPendingBundle();
+    if (!pending) { stopBackendWatcher(); return Promise.resolve(false); }
+    return checkBackendHealth().then(function (reachable) {
+      if (!reachable) return false;
+      return postBundleToBackend(pending).then(function () {
+        clearPendingBundle();
+        stopBackendWatcher();
+        showBackendNotice('Extraction bundle sent to the backend automatically.');
+        setSummary((lastCountsSummary ? lastCountsSummary + ' ' : '') + 'Extraction bundle sent to the backend automatically.', 'info');
+        requestAnalysisForCurrentPoint();
+        return true;
+      }).catch(function (err) {
+        setSummary('Backend is reachable but the bundle could not be sent (' + (err && err.message ? err.message : 'network error') + '). It stays saved in this browser and will be retried.', 'error');
+        return false;
+      });
+    });
+  }
+  function startBackendWatcher() {
+    if (backendWatcherTimer) return;
+    if (typeof setInterval !== 'function') return;
+    backendWatcherTimer = setInterval(function () { checkBackendAndFlush(); }, backendWatchMs);
+  }
+  function stopBackendWatcher() {
+    if (backendWatcherTimer) { clearInterval(backendWatcherTimer); backendWatcherTimer = null; }
+  }
+  function showBackendNotice(text) {
+    var banner = $('lxBackendNotice');
+    var el = $('lxBackendNoticeText');
+    if (!banner || !el) return;
+    el.textContent = text;
+    banner.classList.remove('hidden');
+  }
+  function hideBackendNotice() {
+    var banner = $('lxBackendNotice');
+    if (banner) banner.classList.add('hidden');
   }
 
   /* ------------------------------------------------------------------ */
@@ -1151,6 +1337,8 @@
     if (noticeBtn) noticeBtn.addEventListener('click', openKeyModal);
     var noticeDismissBtn = $('lxKeyNoticeDismissBtn');
     if (noticeDismissBtn) noticeDismissBtn.addEventListener('click', hideKeyNotice);
+    var backendDismissBtn = $('lxBackendNoticeDismissBtn');
+    if (backendDismissBtn) backendDismissBtn.addEventListener('click', hideBackendNotice);
     var forgetBtn = $('lxKeyForgetBtn');
     if (forgetBtn) forgetBtn.addEventListener('click', forgetAllKeys);
     var closeKeyBtn = $('lxKeyCloseBtn');
@@ -1195,6 +1383,11 @@
     if (dlBtn) dlBtn.addEventListener('click', downloadBundle);
     var sendBtn = $('lxSendBackendBtn');
     if (sendBtn) sendBtn.addEventListener('click', sendToBackend);
+
+    /* If a bundle is still pending from an earlier visit, check once now
+     * whether the backend is up; otherwise the watcher starts on the
+     * next extraction and checks every 60 s. */
+    checkBackendAndFlush();
 
     window.addEventListener('cortex:key-status', function (event) {
       var detail = (event && event.detail) || {};
@@ -1246,6 +1439,16 @@
     run: runExtraction,
     getBundle: function () { return lastBundle; },
     downloadBundle: downloadBundle,
-    sendToBackend: sendToBackend
+    sendToBackend: sendToBackend,
+    autoSendBundle: autoSendBundle,
+    getPendingBundle: loadPendingBundle,
+    clearPendingBundle: clearPendingBundle,
+    checkBackendHealth: checkBackendHealth,
+    checkBackendAndFlush: checkBackendAndFlush,
+    startBackendWatcher: startBackendWatcher,
+    stopBackendWatcher: stopBackendWatcher,
+    getLastExtractionMs: function () { return lastExtractionMs; },
+    runWithConcurrency: runWithConcurrency,
+    extractionConcurrency: extractionConcurrency
   };
 })();
