@@ -657,8 +657,20 @@ const TerrainStudio = (() => {
     }
 
     try {
-      setStatus('📍 Resolving location…', 'busy');
-      const loc = await resolveLocation(input.value.trim());
+      // A place picked from live suggestions carries its own
+      // coordinates on the box: use them directly. Re-geocoding
+      // the suggestion's display name fails in Open-Meteo (e.g.
+      // "Rajshahi Division, Bangladesh" returns no results),
+      // so a pick is never re-resolved.
+      const pickedLat = parseFloat(input.dataset.pickedLat);
+      const pickedLon = parseFloat(input.dataset.pickedLon);
+      let loc;
+      if (Number.isFinite(pickedLat) && Number.isFinite(pickedLon)) {
+        loc = { lat: pickedLat, lng: pickedLon, name: input.value.trim() || `${pickedLat.toFixed(4)}, ${pickedLon.toFixed(4)}` };
+      } else {
+        setStatus('📍 Resolving location…', 'busy');
+        loc = await resolveLocation(input.value.trim());
+      }
 
       setStatus(`⛰️ Fetching elevation data for ${loc.name}…`, 'busy');
       const { grid, min, max, mean, provenance } = await fetchElevationGrid(loc.lat, loc.lng, areaKm, resolution);
@@ -2873,6 +2885,7 @@ Keep it structured with short headers and bullet points.`;
     document.getElementById('terrainLocationInput')?.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') buildCityFromSatellite();
     });
+    bindTerrainSearch();
 
     document.querySelectorAll('.terrain-tool').forEach((btn) => {
       btn.addEventListener('click', () => setMode(btn.dataset.mode));
@@ -3408,9 +3421,9 @@ Keep it structured with short headers and bullet points.`;
     renderTopoMap();
   }
 
-  // --- place search (reuses the page's existing Nominatim forwardGeocode) ---
-  let txSearchTimer = null;
-  function txSearchIcon(result) {
+  // --- place search on the single location box (reuses the page's existing Nominatim forwardGeocode) ---
+  let terrainSearchTimer = null;
+  function searchResultIcon(result) {
     const t = `${result.class || ''}/${result.type || ''}`;
     if (/water|river|stream|lake/.test(t)) return '💧';
     if (/highway|road|street/.test(t)) return '🛣️';
@@ -3419,16 +3432,19 @@ Keep it structured with short headers and bullet points.`;
     if (/place|boundary|locality|city|town|village|suburb/.test(t)) return '📍';
     return '📍';
   }
-  function txBindSearch() {
-    const input = txEl('txSearchInput');
-    const box = txEl('txSearchSuggest');
-    if (!input || !box || input.dataset.txBound) return;
-    input.dataset.txBound = '1';
+  function bindTerrainSearch() {
+    const input = txEl('terrainLocationInput');
+    const box = txEl('terrainSearchSuggest');
+    if (!input || !box || input.dataset.terrainSearchBound) return;
+    input.dataset.terrainSearchBound = '1';
     input.addEventListener('input', () => {
-      clearTimeout(txSearchTimer);
+      delete input.dataset.pickedLat;
+      delete input.dataset.pickedLon;
+      clearTimeout(terrainSearchTimer);
       const q = input.value.trim();
       if (q.length < 2) { box.classList.add('hidden'); box.innerHTML = ''; return; }
-      txSearchTimer = setTimeout(async () => {
+      if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(q)) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+      terrainSearchTimer = setTimeout(async () => {
         if (typeof window.forwardGeocode !== 'function') {
           box.classList.remove('hidden');
           box.innerHTML = '<div class="tx-suggest-empty">Place search is unavailable (geocoder not loaded on this page).</div>';
@@ -3446,14 +3462,14 @@ Keep it structured with short headers and bullet points.`;
             const item = document.createElement('button');
             item.type = 'button';
             item.className = 'tx-suggest-item';
-            item.innerHTML = `<span class="tx-suggest-icon">${txSearchIcon(r)}</span><span class="tx-suggest-name"></span>`;
+            item.innerHTML = `<span class="tx-suggest-icon">${searchResultIcon(r)}</span><span class="tx-suggest-name"></span>`;
             item.querySelector('.tx-suggest-name').textContent = r.display_name || r.name || `${r.lat}, ${r.lon}`;
             item.addEventListener('click', () => {
               box.classList.add('hidden');
               box.innerHTML = '';
               input.value = r.display_name || '';
-              const locInput = txEl('terrainLocationInput');
-              if (locInput) locInput.value = r.display_name || `${r.lat}, ${r.lon}`;
+              input.dataset.pickedLat = r.lat;
+              input.dataset.pickedLon = r.lon;
               TX.pendingShrinkBbox = true;
               txEl('terrainGenerateBtn')?.click();
             });
@@ -3467,7 +3483,7 @@ Keep it structured with short headers and bullet points.`;
       }, 250);
     });
     document.addEventListener('click', (e) => {
-      if (!box.classList.contains('hidden') && !e.target.closest('#txSearchWrap')) {
+      if (!box.classList.contains('hidden') && !e.target.closest('#terrainSearchWrap')) {
         box.classList.add('hidden');
       }
     });
@@ -3675,7 +3691,6 @@ Keep it structured with short headers and bullet points.`;
   function bindLxExportControls() {
     if (!txEl('lxExportPanel') || txEl('lxExportPanel').dataset.txBound) return;
     txEl('lxExportPanel').dataset.txBound = '1';
-    txBindSearch();
     // Section tool
     txEl('txSectionToggle')?.addEventListener('click', () => setSectionMode(!TX.section.active));
     txEl('txSectionModeSelect')?.addEventListener('change', (e) => { TX.section.mode = e.target.value; });

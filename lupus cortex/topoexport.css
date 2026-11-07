@@ -40,24 +40,22 @@
 
 /* Area block: search + map + readout grouped as one tight card. */
 .tx-area-block { background: #050816; border: 1px solid #1f2933; border-radius: 14px; padding: 8px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; }
-.tx-area-block .tx-search { margin-bottom: 0; }
 .tx-area-block .tx-map-wrap { margin-bottom: 0; }
 .tx-area-block .tx-readout { margin: 0; }
 .tx-area-block .tx-coverage { margin: 0; }
 
-/* Place search */
-.tx-search { position: relative; margin-bottom: 8px; }
-.tx-search label { display: block; font-weight: 600; margin-bottom: 3px; color: #e5e7eb; }
-.tx-search input[type="text"] { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid #1f2933; border-radius: 6px; font-size: 13px; background: #050816; color: #e5e7eb; }
-.tx-search input[type="text"]::placeholder { color: #9ca3af; }
-.tx-search input[type="text"]:focus { outline: none; border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25); }
-.tx-suggest { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30; background: #0b1021; border: 1px solid #1f2933; border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); overflow: hidden; }
-.tx-suggest-item { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: transparent; color: #e5e7eb; border: 0; border-bottom: 1px solid #1f2933; padding: 8px 10px; cursor: pointer; font-size: 12.5px; line-height: 1.35; }
-.tx-suggest-item:last-child { border-bottom: 0; }
-.tx-suggest-item:hover { background: rgba(56, 189, 248, 0.12); }
-.tx-suggest-icon { flex: 0 0 auto; }
-.tx-suggest-name { flex: 1 1 auto; }
-.tx-suggest-empty { padding: 9px 10px; color: #9ca3af; font-size: 12.5px; }
+/* Single location search (top bar): input + live suggestions. */
+.terrain-generate-bar > .terrain-search { flex: 1 1 260px; min-width: 200px; position: relative; }
+.terrain-search input[type="text"] { width: 100%; box-sizing: border-box; padding: 11px 14px; background: var(--card-bg); border: 1px solid var(--border-soft); border-radius: 10px; color: var(--text); font-size: 14px; }
+.terrain-search input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25); }
+.terrain-search .hidden { display: none; }
+.terrain-suggest { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 60; background: #0b1021; border: 1px solid #1f2933; border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); overflow: hidden; }
+.terrain-suggest-item { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: transparent; color: #e5e7eb; border: 0; border-bottom: 1px solid #1f2933; padding: 8px 10px; cursor: pointer; font-size: 12.5px; line-height: 1.35; }
+.terrain-suggest-item:last-child { border-bottom: 0; }
+.terrain-suggest-item:hover { background: rgba(56, 189, 248, 0.12); }
+.terrain-suggest-icon { flex: 0 0 auto; }
+.terrain-suggest-name { flex: 1 1 auto; }
+.terrain-suggest-empty { padding: 9px 10px; color: #9ca3af; font-size: 12.5px; }
 
 /* 2D preview map + area pill */
 .tx-map-wrap { position: relative; margin-bottom: 8px; }

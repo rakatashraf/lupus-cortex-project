@@ -703,7 +703,10 @@
       </header>
 
       <div class="terrain-generate-bar">
-        <input type="text" id="terrainLocationInput" placeholder="Place name or coordinates (lat, lng)" />
+        <div class="terrain-search" id="terrainSearchWrap">
+          <input type="text" id="terrainLocationInput" placeholder="Place name or coordinates (lat, lng)" autocomplete="off" />
+          <div id="terrainSearchSuggest" class="terrain-suggest hidden"></div>
+        </div>
         <label class="terrain-field">
           <span>Area (km)</span>
           <select id="terrainArea">
@@ -859,12 +862,6 @@
 
           <div class="tx-area-block">
             <p class="tx-block-label">Area</p>
-            <div class="tx-search" id="txSearchWrap">
-              <label for="txSearchInput">Search place</label>
-              <input type="text" id="txSearchInput" placeholder="Search a place (e.g. Rajshahi)…" autocomplete="off" />
-              <div id="txSearchSuggest" class="tx-suggest hidden"></div>
-            </div>
-
             <div class="tx-map-wrap">
               <canvas id="txMapCanvas" width="640" height="420" aria-label="2D preview map with selection box"></canvas>
               <span id="txAreaPill" class="tx-area-pill" title="Selection is within the 50 km² limit.">Max. 50 km²</span>
