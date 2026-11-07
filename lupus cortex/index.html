@@ -152,6 +152,15 @@
           </div>
         </div>
 
+        <!-- API-key expiry notice (shown when a stored key expired or was rejected) -->
+        <div id="lxKeyNotice" class="lx-key-notice hidden" role="alert">
+          <p id="lxKeyNoticeText"></p>
+          <div class="lx-banner-actions">
+            <button class="btn primary small" id="lxKeyNoticeBtn" type="button">Enter a new key</button>
+            <button class="btn secondary small" id="lxKeyNoticeDismissBtn" type="button">Dismiss</button>
+          </div>
+        </div>
+
         <!-- Data extractor entry point -->
         <div class="lx-extractor-toolbar">
           <button class="btn primary" id="lxOpenExtractorBtn" type="button">📥 Extract data</button>
@@ -220,6 +229,13 @@
           </div>
 
           <p class="lx-area-label" id="lxAreaLabel">No area selected yet.</p>
+
+          <div class="lx-key-panel-status" id="lxKeyPanelStatus" aria-live="polite">
+            <p><strong>API keys in this browser:</strong></p>
+            <p>OpenAQ — <span id="lxPanelKeyOpenaq">Not set</span></p>
+            <p>CAMS ADS — <span id="lxPanelKeyCams">Not set</span></p>
+            <p>Earthdata — <span id="lxPanelKeyEarthdata">Not set</span></p>
+          </div>
 
           <fieldset class="lx-fieldset">
             <legend>Area</legend>
@@ -511,23 +527,26 @@
         </div>
         <button class="close-popup" id="lxKeyCloseBtn" aria-label="Close">✕</button>
       </header>
-      <p class="lx-key-intro">The extractor needs these keys to reach the live sources. Leave a field blank to keep the key already stored in this browser.</p>
+      <p class="lx-key-intro">The extractor needs these keys to reach the live sources. Leave a field blank to keep the key already stored in this browser. Each key is verified before it is saved, and saved in this browser only, until it expires.</p>
       <div class="lx-key-field">
         <label for="lxKeyOpenaq">OpenAQ API key</label>
         <input type="password" id="lxKeyOpenaq" autocomplete="off" placeholder="Paste your OpenAQ API key" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyOpenaq" type="button">Verify now</button></div>
         <div class="lx-key-stored">Stored: <span id="lxKeyStatusOpenaq">Not set</span></div>
       </div>
       <div class="lx-key-field">
         <label for="lxKeyCams">CAMS ADS API key</label>
         <input type="password" id="lxKeyCams" autocomplete="off" placeholder="Paste your CAMS ADS API key" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyCams" type="button">Verify now</button></div>
         <div class="lx-key-stored">Stored: <span id="lxKeyStatusCams">Not set</span></div>
       </div>
       <div class="lx-key-field">
         <label for="lxKeyEarthdata">Earthdata token</label>
         <input type="password" id="lxKeyEarthdata" autocomplete="off" placeholder="Paste your Earthdata token" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyEarthdata" type="button">Verify now</button></div>
         <div class="lx-key-stored">Stored: <span id="lxKeyStatusEarthdata">Not set</span></div>
       </div>
-      <p class="lx-key-privacy">Your keys never leave this browser except as a header to the provider that issued them (OpenAQ key → api.openaq.org only). The CAMS ADS key and the Earthdata token are never sent from the browser — CAMS ADS and MERRA-2 are not browser-callable, so those legs are queued for the backend. Keys are never logged.</p>
+      <p class="lx-key-privacy">Keys are saved in this browser only, until they expire. They are verified before they are stored and checked again before each extraction. The OpenAQ key is sent only to api.openaq.org, and the Earthdata token only to cmr.earthdata.nasa.gov for verification. The CAMS ADS key is never sent from the browser — CAMS ADS is not browser-callable, so those legs are queued for the backend and the key is checked by the backend when it runs. Keys are never logged.</p>
       <div class="lx-key-actions">
         <button class="btn primary" id="lxKeySaveBtn" type="button">Save keys</button>
         <button class="btn secondary" id="lxKeyContinueBtn" type="button">Continue without keys</button>

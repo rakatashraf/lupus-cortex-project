@@ -12,11 +12,17 @@
  *    the exact reason it is unavailable). Anything not returned by a live
  *    source is reported as queued / needs-key / unavailable — never faked.
  *  - API keys live ONLY in this browser's localStorage
- *    (key: lupus_cortex_api_keys). They are shown masked, never logged, and
- *    are sent only as a header to the provider that issued them. The CAMS
- *    ADS key and the Earthdata token are never sent from the browser at all:
- *    CAMS ADS and MERRA-2 GES DISC are not browser-callable, so those legs
- *    are queued for the backend.
+ *    (key: lupus_cortex_api_keys) — saved in this browser only, until
+ *    they expire. Each stored key carries its verification status and
+ *    expiry: a key is verified BEFORE it is stored, checked again before
+ *    every extraction, and never used once it is expired or rejected.
+ *    An expired or rejected key raises a visible notice so the user can
+ *    enter a new one. Keys are shown masked, never logged. The OpenAQ key
+ *    is sent only to api.openaq.org and the Earthdata token only to
+ *    cmr.earthdata.nasa.gov (for verification); the CAMS ADS key is never
+ *    sent from the browser — CAMS ADS and MERRA-2 GES DISC are not
+ *    browser-callable, so those legs are queued for the backend and the
+ *    CAMS key is checked by the backend when it runs.
  *  - The model backend is not built yet. When no backend base is
  *    configured, the extracted bundle is offered as a downloadable JSON and
  *    the UI says so honestly instead of pretending an analysis happened.
@@ -125,6 +131,8 @@
   var lastBundle = null;
   var selectedArea = null; /* { mode:'point'|'bbox', lat, lng, name, bbox:[minLng,minLat,maxLng,maxLat] } */
   var cmrCache = {};
+  var sessionVerified = {}; /* provider -> true once live-verified this page session */
+  var expiryTickTimer = null;
 
   /* ------------------------------------------------------------------ */
   /* 4. Small helpers                                                     */
@@ -165,11 +173,11 @@
       var raw = localStorage.getItem(STORAGE_KEY);
       var parsed = raw ? JSON.parse(raw) : {};
       return {
-        openaq: typeof parsed.openaq === 'string' ? parsed.openaq : '',
-        cams: typeof parsed.cams === 'string' ? parsed.cams : '',
-        earthdata: typeof parsed.earthdata === 'string' ? parsed.earthdata : ''
+        openaq: normalizeRecord(parsed.openaq),
+        cams: normalizeRecord(parsed.cams),
+        earthdata: normalizeRecord(parsed.earthdata)
       };
-    } catch (_) { return { openaq: '', cams: '', earthdata: '' }; }
+    } catch (_) { return { openaq: null, cams: null, earthdata: null }; }
   }
   function saveKeys(keys) {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(keys)); } catch (_) { /* storage unavailable */ }
@@ -179,20 +187,274 @@
     if (value.length <= 4) return '••••';
     return '••••••••' + value.slice(-4);
   }
+
+  /* Key records: { value, savedAt, verifiedAt, expiresAt, status }.
+   * status is 'verified' | 'pending' | 'expired' | 'invalid'. Old
+   * plain-string records (pre-expiry builds) are migrated to 'pending'
+   * and live-verified on the next refresh. */
+  var PROVIDERS = ['openaq', 'cams', 'earthdata'];
+  var PROVIDER_LABELS = { openaq: 'OpenAQ API key', cams: 'CAMS ADS API key', earthdata: 'Earthdata token' };
+  var KEY_STATUS_IDS = { openaq: 'lxKeyStatusOpenaq', cams: 'lxKeyStatusCams', earthdata: 'lxKeyStatusEarthdata' };
+  var PANEL_KEY_IDS = { openaq: 'lxPanelKeyOpenaq', cams: 'lxPanelKeyCams', earthdata: 'lxPanelKeyEarthdata' };
+  var KEY_INPUT_IDS = { openaq: 'lxKeyOpenaq', cams: 'lxKeyCams', earthdata: 'lxKeyEarthdata' };
+
+  function normalizeRecord(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'string') {
+      if (!raw) return null;
+      return { value: raw, savedAt: null, verifiedAt: null, expiresAt: null, status: 'pending' };
+    }
+    if (typeof raw === 'object' && typeof raw.value === 'string' && raw.value) {
+      return {
+        value: raw.value,
+        savedAt: typeof raw.savedAt === 'number' ? raw.savedAt : null,
+        verifiedAt: typeof raw.verifiedAt === 'number' ? raw.verifiedAt : null,
+        expiresAt: typeof raw.expiresAt === 'number' ? raw.expiresAt : null,
+        status: ['verified', 'pending', 'expired', 'invalid'].indexOf(raw.status) !== -1 ? raw.status : 'pending'
+      };
+    }
+    return null;
+  }
+  /* Pure: true when the record carries an expiry that has passed. */
+  function isKeyExpired(record, now) {
+    if (!record || !record.value) return false;
+    if (typeof record.expiresAt !== 'number') return false;
+    return now >= record.expiresAt;
+  }
+  /* Pure: the effective status of a record at a given time. Returns
+   * 'missing' for no record, otherwise one of the stored statuses. */
+  function keyStatusFor(record, now) {
+    if (!record || !record.value) return 'missing';
+    if (isKeyExpired(record, now)) return 'expired';
+    if (record.status === 'invalid') return 'invalid';
+    if (record.status === 'verified') return 'verified';
+    return 'pending';
+  }
+  function formatDate(ms) {
+    try { return new Date(ms).toISOString().slice(0, 10); } catch (_) { return ''; }
+  }
+  function b64urlDecode(str) {
+    var s = String(str).replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    if (typeof atob === 'function') return atob(s);
+    if (typeof Buffer !== 'undefined') return Buffer.from(s, 'base64').toString('utf8');
+    return null;
+  }
+  /* Pure: expiry (epoch ms) from a JWT `exp` claim, or null when the
+   * token is not a JWT or carries no exp claim. */
+  function decodeJwtExp(token) {
+    try {
+      var parts = String(token).split('.');
+      if (parts.length !== 3) return null;
+      var decoded = b64urlDecode(parts[1]);
+      if (decoded == null) return null;
+      var payload = JSON.parse(decoded);
+      return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+    } catch (_) { return null; }
+  }
+  function camsFormatOk(value) {
+    var i = String(value).indexOf(':');
+    return i > 0 && i < String(value).length - 1;
+  }
+  /* Live verification. Returns { ok, status, expiresAt, error, transient }.
+   * transient = true means the check itself failed (network / server
+   * error), so the result says nothing about the key. Only 401/403 prove
+   * a key is invalid. Nothing is stored here — callers decide. */
+  function verifyProvider(provider, value) {
+    if (provider === 'openaq') {
+      return fetchWithTimeout(OPENAQ_BASE + '/locations?limit=1', { headers: { 'X-API-Key': value, 'Accept': 'application/json' } }, 15000)
+        .then(function (res) {
+          if (res.status === 200) return { ok: true, status: 'verified', expiresAt: null, error: '', transient: false };
+          if (res.status === 401 || res.status === 403) return { ok: false, status: 'invalid', expiresAt: null, error: 'OpenAQ rejected the key (HTTP ' + res.status + '). Check the key and try again.', transient: false };
+          return { ok: false, status: 'invalid', expiresAt: null, error: 'OpenAQ returned HTTP ' + res.status + ' — the key could not be verified. Try again.', transient: true };
+        })
+        .catch(function (err) {
+          return { ok: false, status: 'invalid', expiresAt: null, error: 'Could not reach OpenAQ (' + (err && err.message ? err.message : 'network error') + '). Check your connection and try again.', transient: true };
+        });
+    }
+    if (provider === 'earthdata') {
+      return fetchWithTimeout(CMR_BASE + '/granules.json?page_size=0', { headers: { 'Authorization': 'Bearer ' + value } }, 15000)
+        .then(function (res) {
+          if (res.status === 200) {
+            var exp = decodeJwtExp(value);
+            if (exp != null && exp <= Date.now()) return { ok: false, status: 'expired', expiresAt: exp, error: 'This Earthdata token already expired on ' + formatDate(exp) + '. Paste a new token.', transient: false };
+            return { ok: true, status: 'verified', expiresAt: exp, error: '', transient: false };
+          }
+          if (res.status === 401 || res.status === 403) return { ok: false, status: 'invalid', expiresAt: null, error: 'Earthdata rejected the token (HTTP ' + res.status + '). Check the token and try again.', transient: false };
+          return { ok: false, status: 'invalid', expiresAt: null, error: 'Earthdata returned HTTP ' + res.status + ' — the token could not be verified. Try again.', transient: true };
+        })
+        .catch(function (err) {
+          return { ok: false, status: 'invalid', expiresAt: null, error: 'Could not reach Earthdata (' + (err && err.message ? err.message : 'network error') + '). Check your connection and try again.', transient: true };
+        });
+    }
+    if (provider === 'cams') {
+      /* The browser cannot call CAMS ADS (no CORS; the API needs a POST
+       * retrieve), so only the uid:key shape is checked here. The backend
+       * verifies the key when it runs. */
+      if (!camsFormatOk(value)) return Promise.resolve({ ok: false, status: 'invalid', expiresAt: null, error: 'CAMS ADS key must look like uid:key — two parts separated by a colon.', transient: false });
+      return Promise.resolve({ ok: true, status: 'pending', expiresAt: null, error: '', transient: false });
+    }
+    return Promise.resolve({ ok: false, status: 'invalid', expiresAt: null, error: 'Unknown provider.', transient: false });
+  }
+  /* Verify first, store only on success. Returns the verify result. */
+  function verifyAndStoreKey(provider, value) {
+    return verifyProvider(provider, value).then(function (res) {
+      if (!res.ok) return res;
+      var now = Date.now();
+      var keys = loadKeys();
+      keys[provider] = { value: value, savedAt: now, verifiedAt: now, expiresAt: res.expiresAt || null, status: res.status };
+      saveKeys(keys);
+      sessionVerified[provider] = true;
+      return res;
+    });
+  }
+  function getKeyStatuses() {
+    var keys = loadKeys();
+    var now = Date.now();
+    var out = {};
+    PROVIDERS.forEach(function (p) { out[p] = keyStatusFor(keys[p], now); });
+    return out;
+  }
+  function unusableKeys(statuses) {
+    var st = statuses || getKeyStatuses();
+    var out = [];
+    PROVIDERS.forEach(function (p) {
+      if (st[p] === 'missing' || st[p] === 'expired' || st[p] === 'invalid') out.push({ provider: p, reason: st[p] });
+    });
+    return out;
+  }
+  function keyIsUsable(provider) {
+    var s = getKeyStatuses()[provider];
+    return s === 'verified' || (provider === 'cams' && s === 'pending');
+  }
+  /* Re-evaluate every stored key: flip past-expiry records to 'expired'
+   * and live re-verify OpenAQ / Earthdata keys that carry no fixed expiry
+   * (once per page session — see sessionVerified). A failed live check
+   * marks the key 'invalid' only on 401/403; network or server errors
+   * leave the stored status untouched. */
+  function refreshKeyStatuses() {
+    var keys = loadKeys();
+    var now = Date.now();
+    var changed = false;
+    var jobs = [];
+    PROVIDERS.forEach(function (p) {
+      var rec = keys[p];
+      if (!rec) return;
+      var status = keyStatusFor(rec, now);
+      if (status !== rec.status) { rec.status = status; changed = true; }
+      /* A 'pending' record has never passed verification, so it is always
+       * checked on refresh; the per-session cache applies only to already
+       * verified keys, so one verified key is not re-checked per component. */
+      if ((p === 'openaq' || p === 'earthdata') && !rec.expiresAt && (rec.status === 'pending' || (rec.status === 'verified' && !sessionVerified[p]))) {
+        jobs.push(verifyProvider(p, rec.value).then(function (res) {
+          if (res.ok) {
+            rec.status = 'verified';
+            rec.verifiedAt = Date.now();
+            if (res.expiresAt) rec.expiresAt = res.expiresAt;
+            sessionVerified[p] = true;
+            changed = true;
+          } else if (!res.transient) {
+            rec.status = 'invalid';
+            changed = true;
+          }
+        }));
+      }
+    });
+    return Promise.all(jobs).then(function () {
+      if (changed) saveKeys(keys);
+      renderKeyStatus();
+      refreshKeyNotice();
+      return getKeyStatuses();
+    });
+  }
+  /* No-network expiry tick: catches keys whose expiry passes while the
+   * page is open. Runs every 60 s from init. */
+  function checkKeyExpiryTick() {
+    var keys = loadKeys();
+    var now = Date.now();
+    var changed = false;
+    PROVIDERS.forEach(function (p) {
+      var rec = keys[p];
+      if (rec && rec.status !== 'expired' && isKeyExpired(rec, now)) { rec.status = 'expired'; changed = true; }
+    });
+    if (changed) { saveKeys(keys); renderKeyStatus(); refreshKeyNotice(); }
+  }
+  function markKeyStatus(provider, status) {
+    var keys = loadKeys();
+    var rec = keys[provider];
+    if (!rec) return false;
+    var mapped = status === 'rejected' ? 'invalid' : status;
+    if (['verified', 'pending', 'expired', 'invalid'].indexOf(mapped) === -1) return false;
+    rec.status = mapped;
+    saveKeys(keys);
+    renderKeyStatus();
+    refreshKeyNotice();
+    return true;
+  }
+  function markKeyInvalid(provider) {
+    var keys = loadKeys();
+    var rec = keys[provider];
+    if (!rec) return;
+    rec.status = 'invalid';
+    saveKeys(keys);
+    renderKeyStatus();
+    refreshKeyNotice();
+  }
+  function showKeyNotice(problems) {
+    var banner = $('lxKeyNotice');
+    var text = $('lxKeyNoticeText');
+    if (!banner || !text) return;
+    var parts = problems.map(function (pr) {
+      if (pr.reason === 'expired') return PROVIDER_LABELS[pr.provider] + ' has expired';
+      if (pr.reason === 'invalid') return PROVIDER_LABELS[pr.provider] + ' was rejected';
+      return PROVIDER_LABELS[pr.provider] + ' needs attention';
+    });
+    text.textContent = 'Your ' + parts.join(' and your ') + '. Enter a new key to keep extracting data.';
+    banner.classList.remove('hidden');
+  }
+  function hideKeyNotice() { var b = $('lxKeyNotice'); if (b) b.classList.add('hidden'); }
+  function refreshKeyNotice() {
+    var st = getKeyStatuses();
+    var problems = PROVIDERS.filter(function (p) { return st[p] === 'expired' || st[p] === 'invalid'; })
+      .map(function (p) { return { provider: p, reason: st[p] }; });
+    if (problems.length) showKeyNotice(problems); else hideKeyNotice();
+  }
+  function keyStatusLabel(status) {
+    return { verified: 'Verified', pending: 'Pending', expired: 'Expired', invalid: 'Invalid', missing: 'Not set' }[status] || status;
+  }
+  function keyStatusText(provider, record, now) {
+    if (!record) return 'Not set';
+    var status = keyStatusFor(record, now);
+    var text = masked(record.value) + ' — ' + keyStatusLabel(status);
+    if (status === 'verified' || status === 'pending') {
+      text += record.expiresAt ? ' · expires ' + formatDate(record.expiresAt) : ' · no fixed expiry — checked each time';
+    } else if (status === 'expired' && record.expiresAt) {
+      text += ' · expired ' + formatDate(record.expiresAt);
+    }
+    return text;
+  }
+  function keyStatusClass(status) {
+    return { verified: 'lx-key-status--verified', pending: 'lx-key-status--pending', expired: 'lx-key-status--expired', invalid: 'lx-key-status--invalid', missing: 'lx-key-status--missing' }[status] || '';
+  }
   function missingKeys() {
     var keys = loadKeys();
     var missing = [];
-    if (!keys.openaq) missing.push('OpenAQ API key');
-    if (!keys.cams) missing.push('CAMS ADS API key');
-    if (!keys.earthdata) missing.push('Earthdata token');
+    PROVIDERS.forEach(function (p) {
+      if (!keys[p] || !keys[p].value) missing.push(PROVIDER_LABELS[p]);
+    });
     return missing;
   }
   function renderKeyStatus() {
     var keys = loadKeys();
-    var map = { openaq: 'lxKeyStatusOpenaq', cams: 'lxKeyStatusCams', earthdata: 'lxKeyStatusEarthdata' };
-    Object.keys(map).forEach(function (k) {
-      var el = $(map[k]);
-      if (el) el.textContent = masked(keys[k]);
+    var now = Date.now();
+    PROVIDERS.forEach(function (p) {
+      var text = keyStatusText(p, keys[p], now);
+      var cls = 'lx-key-status ' + keyStatusClass(keyStatusFor(keys[p], now));
+      [$(KEY_STATUS_IDS[p]), $(PANEL_KEY_IDS[p])].forEach(function (el) {
+        if (!el) return;
+        el.textContent = text;
+        el.className = cls;
+      });
     });
   }
   function openKeyModal() {
@@ -206,22 +468,94 @@
     modal.classList.remove('hidden');
   }
   function closeKeyModal() { var m = $('lxKeyModal'); if (m) m.classList.add('hidden'); }
+  /* Save = verify first, store only what passes. A failed key is never
+   * stored and the modal stays open with the error on that provider's
+   * status line. Blank fields keep the key already stored. */
   function saveKeysFromModal() {
-    var keys = loadKeys();
-    var io = $('lxKeyOpenaq'); var ic = $('lxKeyCams'); var ie = $('lxKeyEarthdata');
-    /* Only overwrite a stored key when the user typed a new value. */
-    if (io && io.value.trim()) keys.openaq = io.value.trim();
-    if (ic && ic.value.trim()) keys.cams = ic.value.trim();
-    if (ie && ie.value.trim()) keys.earthdata = ie.value.trim();
-    saveKeys(keys);
-    renderKeyStatus();
-    closeKeyModal();
+    var entered = {};
+    PROVIDERS.forEach(function (p) {
+      var input = $(KEY_INPUT_IDS[p]);
+      entered[p] = input && input.value.trim() ? input.value.trim() : '';
+    });
+    var toCheck = PROVIDERS.filter(function (p) { return entered[p]; });
     var note = $('lxKeyNote');
-    if (note) note.textContent = 'Keys saved in this browser only.';
-    if (pendingExtractAfterKeys) { pendingExtractAfterKeys = false; runExtraction(); }
+    if (!toCheck.length) {
+      closeKeyModal();
+      if (pendingExtractAfterKeys) { pendingExtractAfterKeys = false; runExtraction(); }
+      return;
+    }
+    if (note) note.textContent = 'Verifying keys…';
+    Promise.all(toCheck.map(function (p) {
+      return verifyAndStoreKey(p, entered[p]).then(function (res) { return { provider: p, res: res }; });
+    })).then(function (outcomes) {
+      var failed = outcomes.filter(function (o) { return !o.res.ok; });
+      renderKeyStatus();
+      failed.forEach(function (o) {
+        var el = $(KEY_STATUS_IDS[o.provider]);
+        if (el) {
+          el.textContent = o.res.error || 'Verification failed.';
+          el.className = 'lx-key-status lx-key-status--invalid';
+        }
+      });
+      if (failed.length) {
+        if (note) note.textContent = 'Some keys could not be verified and were not stored — fix them and try again.';
+        return;
+      }
+      PROVIDERS.forEach(function (p) { var input = $(KEY_INPUT_IDS[p]); if (input) input.value = ''; });
+      closeKeyModal();
+      if (note) note.textContent = 'Keys verified and saved in this browser only.';
+      if (pendingExtractAfterKeys) { pendingExtractAfterKeys = false; runExtraction(); }
+    });
+  }
+  /* "Verify now" for one provider: verifies the typed value if there is
+   * one (stores it on success), otherwise re-checks the stored key. */
+  function verifyKeyFromModal(provider) {
+    var input = $(KEY_INPUT_IDS[provider]);
+    var typed = input && input.value.trim() ? input.value.trim() : '';
+    var stored = loadKeys()[provider];
+    var note = $('lxKeyNote');
+    var statusEl = $(KEY_STATUS_IDS[provider]);
+    if (!typed && !stored) {
+      if (statusEl) statusEl.textContent = 'Enter a key first.';
+      return;
+    }
+    if (statusEl) statusEl.textContent = 'Checking…';
+    if (typed) {
+      verifyAndStoreKey(provider, typed).then(function (res) {
+        renderKeyStatus();
+        if (res.ok) {
+          if (input) input.value = '';
+          if (note) note.textContent = PROVIDER_LABELS[provider] + ' verified and saved in this browser only.';
+        } else {
+          if (statusEl) { statusEl.textContent = res.error; statusEl.className = 'lx-key-status lx-key-status--invalid'; }
+          if (note) note.textContent = PROVIDER_LABELS[provider] + ' was not stored.';
+        }
+      });
+      return;
+    }
+    verifyProvider(provider, stored.value).then(function (res) {
+      if (res.ok) {
+        var keys = loadKeys();
+        keys[provider] = { value: stored.value, savedAt: stored.savedAt || Date.now(), verifiedAt: Date.now(), expiresAt: res.expiresAt || stored.expiresAt || null, status: res.status };
+        saveKeys(keys);
+        sessionVerified[provider] = true;
+        renderKeyStatus();
+        if (note) note.textContent = PROVIDER_LABELS[provider] + ' verified.';
+      } else if (!res.transient) {
+        markKeyInvalid(provider);
+        if (statusEl) { statusEl.textContent = res.error; statusEl.className = 'lx-key-status lx-key-status--invalid'; }
+        if (note) note.textContent = PROVIDER_LABELS[provider] + ' was rejected.';
+      } else {
+        renderKeyStatus();
+        if (statusEl) statusEl.textContent = res.error;
+        if (note) note.textContent = 'Could not check ' + PROVIDER_LABELS[provider] + ' — try again.';
+      }
+    });
   }
   function forgetAllKeys() {
     try { localStorage.removeItem(STORAGE_KEY); } catch (_) { /* ignore */ }
+    sessionVerified = {};
+    hideKeyNotice();
     renderKeyStatus();
     var note = $('lxKeyNote');
     if (note) note.textContent = 'All stored keys were removed from this browser.';
@@ -285,10 +619,20 @@
   /* ------------------------------------------------------------------ */
   function openaqLeg(area) {
     var keys = loadKeys();
-    if (!keys.openaq) {
-      return Promise.resolve({ status: 'needs-key', evidence: 'OpenAQ API key required — add it in the API keys popup.' });
+    var keyStatus = keyStatusFor(keys.openaq, Date.now());
+    if (keyStatus === 'missing') {
+      return Promise.resolve({ status: 'needs-key', evidence: 'OpenAQ API key missing — add it in the API keys popup.' });
     }
-    var headers = { 'X-API-Key': keys.openaq, 'Accept': 'application/json' };
+    if (keyStatus === 'expired') {
+      return Promise.resolve({ status: 'needs-key', evidence: 'OpenAQ API key expired — enter a new key in the API keys popup.' });
+    }
+    if (keyStatus === 'invalid') {
+      return Promise.resolve({ status: 'needs-key', evidence: 'OpenAQ API key invalid — OpenAQ rejected it; enter a new key in the API keys popup.' });
+    }
+    if (keyStatus === 'pending') {
+      return Promise.resolve({ status: 'needs-key', evidence: 'OpenAQ API key not verified yet — verify it in the API keys popup.' });
+    }
+    var headers = { 'X-API-Key': keys.openaq.value, 'Accept': 'application/json' };
     var url = OPENAQ_BASE + '/locations?coordinates=' + area.lat + ',' + area.lng + '&radius=25000&limit=10';
     return fetchJson(url, { headers: headers }, 20000)
       .then(function (data) {
@@ -315,7 +659,12 @@
         });
       })
       .catch(function (err) {
-        return { status: 'error', evidence: 'OpenAQ request failed (' + (err && err.message ? err.message : 'network error') + ').' };
+        var msg = err && err.message ? err.message : 'network error';
+        if (/HTTP 40[13]/.test(msg)) {
+          markKeyInvalid('openaq');
+          return { status: 'needs-key', evidence: 'OpenAQ API key invalid — OpenAQ rejected it (' + msg + '); enter a new key in the API keys popup.' };
+        }
+        return { status: 'error', evidence: 'OpenAQ request failed (' + msg + ').' };
       });
   }
 
@@ -386,9 +735,11 @@
     return Promise.resolve({ status: 'queued', evidence: reason });
   }
   function needsKeyLeg(what, reason) {
-    var keys = loadKeys();
-    if (what === 'earthdata' && !keys.earthdata) return Promise.resolve({ status: 'needs-key', evidence: reason + ' Earthdata token required.' });
-    if (what === 'cams' && !keys.cams) return Promise.resolve({ status: 'needs-key', evidence: reason + ' CAMS ADS API key required.' });
+    var status = keyStatusFor(loadKeys()[what], Date.now());
+    if (status === 'missing') return Promise.resolve({ status: 'needs-key', evidence: reason + ' Key missing — add it in the API keys popup.' });
+    if (status === 'expired') return Promise.resolve({ status: 'needs-key', evidence: reason + ' Key expired — enter a new key in the API keys popup.' });
+    if (status === 'invalid') return Promise.resolve({ status: 'needs-key', evidence: reason + ' Key invalid — it was rejected; enter a new key in the API keys popup.' });
+    if (status === 'pending' && what !== 'cams') return Promise.resolve({ status: 'needs-key', evidence: reason + ' Key not verified yet — verify it in the API keys popup.' });
     return Promise.resolve({ status: 'queued', evidence: reason + ' Key on file — queued for backend.' });
   }
 
@@ -494,7 +845,18 @@
   /* ------------------------------------------------------------------ */
   /* 10. Extraction run + hand-off                                       */
   /* ------------------------------------------------------------------ */
+  /* Extraction gate: keys are re-checked first; a key that is missing,
+   * expired or invalid blocks its legs (the leg reports exactly why) and
+   * raises the notice. Legs that do not depend on the key still run. */
   function runExtraction() {
+    if (extracting) return;
+    refreshKeyStatuses().then(function () {
+      var bad = unusableKeys();
+      if (bad.length) showKeyNotice(bad);
+      proceedExtraction();
+    });
+  }
+  function proceedExtraction() {
     if (extracting) return;
     var area = getArea();
     var dates = getDates();
@@ -566,7 +928,8 @@
         components_listed: LUPUS_COMPONENTS.length,
         trained_count: TRAINED_IDS.length,
         backend_configured: Boolean(String(window.LUPUS_CORTEX_API_BASE || '').replace(/\/$/, '')),
-        note: 'Statuses are evidence only. No component value was invented; queued legs need the backend, needs-key legs need the matching API key.'
+        key_statuses: getKeyStatuses(),
+        note: 'Statuses are evidence only. No component value was invented; queued legs need the backend, needs-key legs need the matching API key. Key statuses are included without key values.'
       }
     };
   }
@@ -580,6 +943,18 @@
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  /* The backend may report per-provider key status in its /api/extract
+   * response ({ key_status: { openaq: 'verified', cams: 'rejected', ... } }).
+   * A rejection is surfaced through the same expiry/invalid notice path. */
+  function applyBackendKeyStatus(data) {
+    if (!data || typeof data !== 'object') return;
+    var ks = data.key_status || data.keyStatus || data.keys;
+    if (!ks || typeof ks !== 'object') return;
+    PROVIDERS.forEach(function (p) {
+      if (ks[p]) markKeyStatus(p, ks[p]);
+    });
   }
 
   function sendToBackend() {
@@ -600,7 +975,15 @@
       body: JSON.stringify(lastBundle)
     })
       .then(function (res) {
-        if (!res.ok) throw new Error('Backend returned HTTP ' + res.status);
+        return res.text().then(function (text) {
+          var data = null;
+          try { data = JSON.parse(text); } catch (_) { /* non-JSON body */ }
+          return { res: res, data: data };
+        });
+      })
+      .then(function (out) {
+        if (!out.res.ok) throw new Error('Backend returned HTTP ' + out.res.status);
+        applyBackendKeyStatus(out.data);
         setSummary('Extraction bundle sent to the backend. Requesting analysis for the selected area…', 'info');
         if (point && window.CortexAnalysis && typeof window.CortexAnalysis.request === 'function') {
           window.CortexAnalysis.request(point);
@@ -732,7 +1115,7 @@
     renderChecklist({});
     initDateInputs();
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    if (missingKeys().length) openKeyModal();
+    if (unusableKeys().length) openKeyModal();
   }
   function closeExtractor() { var p = $('lxExtractorPanel'); if (p) p.classList.add('hidden'); }
 
@@ -740,9 +1123,13 @@
     if (bound) return;
     bound = true;
     renderKeyStatus();
+    refreshKeyStatuses();
     setAreaLabel();
     renderChecklist({});
     initDateInputs();
+    if (typeof setInterval === 'function' && !expiryTickTimer) {
+      expiryTickTimer = setInterval(checkKeyExpiryTick, 60000);
+    }
 
     var openBtn = $('lxOpenExtractorBtn');
     if (openBtn) openBtn.addEventListener('click', openExtractor);
@@ -755,6 +1142,15 @@
 
     var saveBtn = $('lxKeySaveBtn');
     if (saveBtn) saveBtn.addEventListener('click', saveKeysFromModal);
+    var verifyBtns = { openaq: 'lxKeyVerifyOpenaq', cams: 'lxKeyVerifyCams', earthdata: 'lxKeyVerifyEarthdata' };
+    Object.keys(verifyBtns).forEach(function (p) {
+      var btn = $(verifyBtns[p]);
+      if (btn) btn.addEventListener('click', function () { verifyKeyFromModal(p); });
+    });
+    var noticeBtn = $('lxKeyNoticeBtn');
+    if (noticeBtn) noticeBtn.addEventListener('click', openKeyModal);
+    var noticeDismissBtn = $('lxKeyNoticeDismissBtn');
+    if (noticeDismissBtn) noticeDismissBtn.addEventListener('click', hideKeyNotice);
     var forgetBtn = $('lxKeyForgetBtn');
     if (forgetBtn) forgetBtn.addEventListener('click', forgetAllKeys);
     var closeKeyBtn = $('lxKeyCloseBtn');
@@ -784,18 +1180,26 @@
 
     var extractBtn = $('lxExtractBtn');
     if (extractBtn) extractBtn.addEventListener('click', function () {
-      if (missingKeys().length && !pendingExtractAfterKeys) {
-        pendingExtractAfterKeys = true;
-        openKeyModal();
-        return;
-      }
-      runExtraction();
+      refreshKeyStatuses().then(function () {
+        var bad = unusableKeys();
+        if (bad.length && !pendingExtractAfterKeys) {
+          pendingExtractAfterKeys = true;
+          showKeyNotice(bad);
+          openKeyModal();
+          return;
+        }
+        runExtraction();
+      });
     });
     var dlBtn = $('lxDownloadBundleBtn');
     if (dlBtn) dlBtn.addEventListener('click', downloadBundle);
     var sendBtn = $('lxSendBackendBtn');
     if (sendBtn) sendBtn.addEventListener('click', sendToBackend);
 
+    window.addEventListener('cortex:key-status', function (event) {
+      var detail = (event && event.detail) || {};
+      if (detail.provider && detail.status) markKeyStatus(detail.provider, detail.status);
+    });
     window.addEventListener('cortex:place-selected', function (event) {
       var detail = event.detail || {};
       if (Number.isFinite(Number(detail.lat)) && Number.isFinite(Number(detail.lng))) {
@@ -821,7 +1225,21 @@
     openKeyModal: openKeyModal,
     closeKeyModal: closeKeyModal,
     getKeys: loadKeys,
+    getKeyStatuses: getKeyStatuses,
     missingKeys: missingKeys,
+    unusableKeys: unusableKeys,
+    isKeyExpired: isKeyExpired,
+    keyStatusFor: keyStatusFor,
+    decodeJwtExp: decodeJwtExp,
+    verifyProvider: verifyProvider,
+    verifyAndStoreKey: verifyAndStoreKey,
+    refreshKeyStatuses: refreshKeyStatuses,
+    checkKeyExpiryTick: checkKeyExpiryTick,
+    showKeyNotice: showKeyNotice,
+    markKeyStatus: markKeyStatus,
+    openaqLeg: openaqLeg,
+    needsKeyLeg: needsKeyLeg,
+    extractComponent: extractComponent,
     forgetAllKeys: forgetAllKeys,
     getArea: getArea,
     getDates: getDates,
