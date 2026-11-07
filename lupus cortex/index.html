@@ -9,8 +9,9 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style fixed.css" />
   <link rel="stylesheet" href="data-extractor.css" />
+  <link rel="stylesheet" href="topoexport.css" />
   <!-- External Libraries -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
@@ -848,6 +849,150 @@
         </div>
 
         <aside class="terrain-side">
+
+        <section id="lxExportPanel" class="lx-export" aria-label="Export configurator">
+          <div class="tx-panel-head">
+            <h3 class="tx-panel-title">Export — 2D &amp; 3D site data</h3>
+            <span class="tx-panel-tag">Open data</span>
+          </div>
+          <p class="tx-provenance">Sources: OpenStreetMap (buildings, roads, railways, water, green space) · Elevation: Open-Meteo / Terrarium DEM. Exports are derived from open data and are <b>not survey-grade</b> — do not use for legal boundaries or construction staking.</p>
+
+          <div class="tx-area-block">
+            <p class="tx-block-label">Area</p>
+            <div class="tx-search" id="txSearchWrap">
+              <label for="txSearchInput">Search place</label>
+              <input type="text" id="txSearchInput" placeholder="Search a place (e.g. Rajshahi)…" autocomplete="off" />
+              <div id="txSearchSuggest" class="tx-suggest hidden"></div>
+            </div>
+
+            <div class="tx-map-wrap">
+              <canvas id="txMapCanvas" width="640" height="420" aria-label="2D preview map with selection box"></canvas>
+              <span id="txAreaPill" class="tx-area-pill" title="Selection is within the 50 km² limit.">Max. 50 km²</span>
+            </div>
+            <p id="txBboxReadout" class="tx-readout">Generate a location first — the selection box appears on the 2D preview map.</p>
+            <p id="txCoverageNote" class="tx-coverage"></p>
+          </div>
+
+          <div class="tx-section-tool">
+            <button type="button" class="btn secondary small" id="txSectionToggle">✂️ Create a section</button>
+            <div id="txSectionControls" class="tx-section-controls hidden">
+              <label>Mode
+                <select id="txSectionModeSelect">
+                  <option value="select">Select</option>
+                  <option value="draw">Draw</option>
+                </select>
+              </label>
+              <button type="button" class="btn primary small" id="txSectionGenerate">Generate</button>
+              <p class="tx-hint">Drag the blue endpoints on the map, or switch to Draw and click two points. Generate samples the DEM along the line.</p>
+              <canvas id="txProfileCanvas" width="560" height="180"></canvas>
+              <p id="txProfileStats" class="tx-readout"></p>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="satellite">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="satellite" checked /> Satellite Image</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-satellite">
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="satellite" data-tx-format="JPEG">JPEG</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="d2">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="d2" checked /> 2D Vectorial Map</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-d2">
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="parcels" checked disabled /> Cadastral Parcels <span class="tx-note">no data</span></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="roads" checked /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="railways" checked /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="waterways" checked /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="shadows" checked /> Building Shadows</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="treesAi" data-tx-pro="1" data-tx-label="Trees and Hedges (AI)" /> Trees and Hedges <span class="tx-badge">AI</span> <span class="tx-badge pro">PRO</span></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="contours" checked /> Contour Lines <button type="button" class="tx-interval-btn" id="tx2dContourBtn" data-tx-interval="contour">5 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="d2" data-tx-format="DXF">DXF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="DWG">DWG</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="RVT">RVT <span class="tx-badge pro">PRO+</span></button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="SKP">SKP</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="3DM">3DM</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="PDF">PDF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="SVG">SVG</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="d3">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="d3" checked /> 3D Modeling</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-d3">
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="roofsAi" data-tx-pro="1" data-tx-label="Buildings with Roofs (AI)" /> Buildings with Roofs <span class="tx-badge">AI</span></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="parcels" disabled /> Cadastral Parcels <span class="tx-note">no data</span></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="roads" /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="railways" /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="waterways" /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="treesAi" data-tx-pro="1" data-tx-label="Trees and Hedges (AI)" /> Trees and Hedges <span class="tx-badge">AI</span> <span class="tx-badge pro">PRO</span></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="contours" /> Contour Lines <button type="button" class="tx-interval-btn" id="tx3dContourBtn" data-tx-interval="contour">5 m</button></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="terrainMesh" checked /> Terrain Mesh <button type="button" class="tx-interval-btn" id="txDtmBtn" data-tx-interval="dtm">20 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="d3" data-tx-format="DXF">DXF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="IFC">IFC <span class="tx-badge pro">PRO+</span></button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="RVT">RVT <span class="tx-badge pro">PRO+</span></button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="SKP">SKP</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="3DM">3DM</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="OBJ">OBJ</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="glTF">glTF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="STL">STL</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="raw">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="raw" /> Raw Formats</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body collapsed" id="txSection-raw">
+              <label class="tx-layer"><input type="checkbox" id="txRaw-buildings" data-tx-section="raw" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-parcels" data-tx-section="raw" data-tx-layer="parcels" checked disabled /> Cadastral Parcels <span class="tx-note">no data</span></label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-roads" data-tx-section="raw" data-tx-layer="roads" checked /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-railways" data-tx-section="raw" data-tx-layer="railways" checked /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-waterways" data-tx-section="raw" data-tx-layer="waterways" checked /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-trees" data-tx-section="raw" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-treesAi" data-tx-section="raw" data-tx-layer="treesAi" data-tx-pro="1" data-tx-label="Trees and Hedges (AI)" checked /> Trees and Hedges <span class="tx-badge">AI</span> <span class="tx-badge pro">PRO</span></label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-contours" data-tx-section="raw" data-tx-layer="contours" checked /> Contour Lines <button type="button" class="tx-interval-btn" id="txRawContourBtn" data-tx-interval="contour">5 m</button></label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-terrain" data-tx-section="raw" data-tx-layer="terrain" /> Terrain <button type="button" class="tx-interval-btn" id="txRawDtmBtn" data-tx-interval="dtm">20 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="raw" data-tx-format="GeoJSON">GeoJSON</button>
+                <button type="button" class="tx-fmt" data-tx-section="raw" data-tx-format="TIFF">TIFF</button>
+                <button type="button" class="tx-fmt" data-tx-section="raw" data-tx-format="TXT">TXT</button>
+              </div>
+            </div>
+          </div>
+
+          <button type="button" class="btn primary tx-export-now" id="txExportNow">Export Now</button>
+          <p id="txGateNote" class="tx-gate-note hidden"></p>
+          <p id="txExportProgress" class="tx-progress"></p>
+          <div id="txMyExport" class="tx-my-export hidden">
+            <h4>My export</h4>
+            <div id="txExportFiles" class="tx-file-list"></div>
+            <p id="txExportNotes" class="tx-export-notes"></p>
+          </div>
+        </section>
           <div class="terrain-stats" id="terrainStats">
             <div><span>Relief</span><strong>—</strong></div>
             <div><span>Mean elev.</span><strong>—</strong></div>
@@ -891,6 +1036,12 @@
     </div>
   </div>
 
+
+  <div id="txIntervalMenu" class="tx-interval-menu hidden" role="menu">
+    <input type="text" id="txIntervalInput" value="5.00 m" aria-label="Interval in metres" />
+    <div id="txIntervalOptions" class="tx-interval-options"></div>
+  </div>
+
   <footer class="footer">
     <p>© 2024 LUPUS CORTEX - Urban Intelligence Solutions | www.lupus-cortex.com</p>
     <p>Proprietary analysis - authorized use only.</p>
@@ -906,7 +1057,7 @@
   <script src="chatbot.js"></script>
   <script src="usecases.js"></script>
   <script src="map.js"></script>
-  <script src="terrain3d.js"></script>
+  <script src="terrain3d fixed.js"></script>
   <script src="local-insights.js"></script>
 </body>
 </html>
