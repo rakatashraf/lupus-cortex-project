@@ -20,6 +20,8 @@ const TerrainStudio = (() => {
   const NASA_GIBS_MATRIX_SET = 'GoogleMapsCompatible_Level9';
   const SATELLITE_TARGET_PX = 2048; // optional satellite overlay only; geometry drives model clarity
   const SATELLITE_MAX_TILES = 160; // safety cap on stitched tiles
+  const gibsDateCache = new Map();
+  const GIBS_DATE_FALLBACK_DAYS = 10;
 
   // --- Three.js scene state ---
   let scene = null;
@@ -70,8 +72,8 @@ const TerrainStudio = (() => {
     observed: { terrain: null, buildings: [], roads: [], vegetation: [], water: [], landCover: [], infrastructure: [], metadata: {} },
     scenario: { addedBuildings: [], removedBuildingIds: [], modifiedBuildings: [], addedRoads: [], removedRoadIds: [], terrainEdits: [], vegetationChanges: [], waterChanges: [], landUseChanges: [] }
   };
-  const gisSourceData = { buildings: [], roads: [], water: [], vegetation: [] };
-  const gisRenderData = { buildings: [], roads: [], water: [], vegetation: [] };
+  const gisSourceData = { buildings: [], roads: [], railways: [], water: [], vegetation: [] };
+  const gisRenderData = { buildings: [], roads: [], railways: [], water: [], vegetation: [] };
 
   function resetScenarioState() {
     Object.values(digitalTwinState.scenario).forEach(list => { list.length = 0; });
@@ -405,9 +407,24 @@ const TerrainStudio = (() => {
     return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z);
   }
 
-  function getGibsImageDate(daysAgo = 7) {
+  function getGibsImageDate(daysAgo = 0) {
     const date = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
     return date.toISOString().slice(0, 10);
+  }
+
+  async function resolveLatestGibsDate(zoom, x, y) {
+    const requestedDate = getGibsImageDate();
+    if (gibsDateCache.has(requestedDate)) return gibsDateCache.get(requestedDate);
+    for (let lagDays = 0; lagDays <= GIBS_DATE_FALLBACK_DAYS; lagDays++) {
+      const imageryDate = getGibsImageDate(lagDays);
+      const image = await loadTile(imageryDate, zoom, x, y);
+      if (image) {
+        const result = { requestedDate, imageryDate, lagDays, fallbackUsed: lagDays > 0, layer: NASA_GIBS_LAYER };
+        gibsDateCache.set(requestedDate, result);
+        return result;
+      }
+    }
+    return null;
   }
 
   function loadTile(date, z, x, y) {
@@ -457,8 +474,10 @@ const TerrainStudio = (() => {
         tiles.push({ tx, ty });
       }
     }
-    const imageDate = getGibsImageDate();
-    const imgs = await Promise.all(tiles.map((t) => loadTile(imageDate, z, t.tx, t.ty)));
+    // GIBS is visual evidence only; numerical environmental features remain backend-owned.
+    const dateResolution = await resolveLatestGibsDate(z, tiles[0].tx, tiles[0].ty);
+    if (!dateResolution) return null;
+    const imgs = await Promise.all(tiles.map((t) => loadTile(dateResolution.imageryDate, z, t.tx, t.ty)));
     imgs.forEach((img, i) => {
       if (!img) return;
       const { tx, ty } = tiles[i];
@@ -487,7 +506,10 @@ const TerrainStudio = (() => {
       texture: tex,
       source: 'NASA GIBS MODIS Terra True Color',
       layer: NASA_GIBS_LAYER,
-      date: imageDate,
+      date: dateResolution.imageryDate,
+      requestedDate: dateResolution.requestedDate,
+      lagDays: dateResolution.lagDays,
+      fallbackUsed: dateResolution.fallbackUsed,
       zoom: z
     };
   }
@@ -1082,12 +1104,12 @@ const TerrainStudio = (() => {
     return mesh;
   }
 
-  // Position a structure mesh so its base sits on the terrain at (x,z)
+  // Position user or observed-building meshes so their bases sit on terrain.
   function seatStructure(mesh, x, z) {
     const y = terrainSurfaceY(x, z);
     const rec = mesh.userData.record;
-    // GIS buildings are extruded from a y=0 base; boxes are centred
-    const off = rec && rec.source === 'gis' ? 0 : mesh.userData.heightUnits / 2;
+    // Observed GIS and dynamically materialized source buildings are extruded from y=0.
+    const off = rec && rec.source === 'observed' ? 0 : mesh.userData.heightUnits / 2;
     mesh.position.set(x, y + off, z);
   }
 
@@ -1112,6 +1134,15 @@ const TerrainStudio = (() => {
   }
 
   function removeStructure(record, silent) {
+    if (record?.source === 'observed') {
+      if (record.mesh) { record.mesh.visible = false; record.mesh.userData.removed = true; }
+      if (record.type === 'building' && !digitalTwinState.scenario.removedBuildingIds.includes(record.id)) digitalTwinState.scenario.removedBuildingIds.push(record.id);
+      if (record.type === 'vegetation') digitalTwinState.scenario.vegetationChanges.push({ id: record.id, action: 'remove' });
+      if (record.type === 'water') digitalTwinState.scenario.waterChanges.push({ id: record.id, action: 'remove' });
+      if (selectedStructure === record) { selectedStructure = null; updateSelectionInfo(); }
+      updateStatsPanel(); scheduleTwinPreview();
+      return;
+    }
     const idx = structures.indexOf(record);
     if (idx === -1) return;
     structures.splice(idx, 1);
@@ -1154,21 +1185,46 @@ const TerrainStudio = (() => {
   }
 
   function structureHitAtPointer(e) {
-    if (!structureGroup) return null;
+    if (!structureGroup || !gisGroup) return null;
     pointerToNDC(e);
     raycaster.setFromCamera(pointerNDC, camera);
-    const hits = raycaster.intersectObjects(structureGroup.children, false);
-    return hits.length ? hits[0].object : null;
+    const candidates = [...structureGroup.children, ...gisGroup.children].filter(mesh => mesh.userData?.record && mesh.visible);
+    const hits = raycaster.intersectObjects(candidates, true);
+    for (const hit of hits) {
+      let object = hit.object;
+      while (object && !object.userData?.record) object = object.parent;
+      if (object?.userData?.record) return object;
+    }
+    return null;
   }
 
   function selectStructureAtPointer(e) {
-    const mesh = structureHitAtPointer(e);
+    const mesh = structureHitAtPointer(e) || materializeObservedBuildingAtPointer(e);
     selectStructure(mesh ? mesh.userData.record : null);
   }
 
   function deleteStructureAtPointer(e) {
-    const mesh = structureHitAtPointer(e);
+    const mesh = structureHitAtPointer(e) || materializeObservedBuildingAtPointer(e);
     if (mesh && mesh.userData.record) removeStructure(mesh.userData.record);
+  }
+
+  // Buildings beyond the visual cap remain selectable from the full OSM source store.
+  // A selected source feature is materialized on demand without changing the baseline.
+  function materializeObservedBuildingAtPointer(e) {
+    if (!terrainMesh) return null;
+    pointerToNDC(e); raycaster.setFromCamera(pointerNDC, camera);
+    const hit = raycaster.intersectObject(terrainMesh)[0];
+    if (!hit) return null;
+    const point = terrainMesh.worldToLocal(hit.point.clone());
+    const feature = gisSourceData.buildings.find(item => {
+      const polygon = (item.geometry || []).map(vertex => geoToLocal(vertex.lat, vertex.lon));
+      return polygon.length >= 3 && pointInPolygonXZ(point.x, point.z, polygon);
+    });
+    if (!feature) return null;
+    const existing = gisGroup.children.find(mesh => mesh.userData?.observedFeatureId === feature.id);
+    if (existing) return existing;
+    buildBuildingsMesh([feature]);
+    return gisGroup.children.find(mesh => mesh.userData?.observedFeatureId === feature.id) || null;
   }
 
   function selectStructure(record) {
@@ -1197,7 +1253,14 @@ const TerrainStudio = (() => {
     selectedStructure.nx = p.x / PLANE_SIZE;
     selectedStructure.nz = p.z / PLANE_SIZE;
     seatStructure(selectedStructure.mesh, p.x, p.z);
-    if (!digitalTwinState.scenario.modifiedBuildings.includes(selectedStructure) && selectedStructure.type === 'building') digitalTwinState.scenario.modifiedBuildings.push(selectedStructure);
+    if (selectedStructure.type === 'building') {
+      const change = selectedStructure.source === 'observed'
+        ? { id: selectedStructure.id, nx: selectedStructure.nx, nz: selectedStructure.nz }
+        : selectedStructure;
+      if (!digitalTwinState.scenario.modifiedBuildings.some(item => item.id === change.id || item === change)) digitalTwinState.scenario.modifiedBuildings.push(change);
+    }
+    if (selectedStructure.type === 'vegetation') digitalTwinState.scenario.vegetationChanges.push({ id: selectedStructure.id, action: 'move', nx: selectedStructure.nx, nz: selectedStructure.nz });
+    if (selectedStructure.type === 'water') digitalTwinState.scenario.waterChanges.push({ id: selectedStructure.id, action: 'move', nx: selectedStructure.nx, nz: selectedStructure.nz });
     scheduleTwinPreview();
   }
 
@@ -1229,12 +1292,16 @@ const TerrainStudio = (() => {
   function adjustSelectedHeight(factor) {
     const rec = selectedStructure;
     if (!rec || !rec.mesh) return;
+    if (rec.type !== 'building') { setStatus('Height editing is available for buildings only.', 'error'); return; }
     const newScale = Math.max(0.1, (rec.mesh.scale.y || 1) * factor);
     rec.mesh.scale.y = newScale;
     if (rec.heightMeters) rec.heightMeters = Math.max(1, rec.heightMeters * factor);
-    if (rec.source !== 'gis') {
+    if (rec.source !== 'observed') {
       // re-seat centred meshes so the base stays on the ground
       seatStructure(rec.mesh, rec.nx * PLANE_SIZE, rec.nz * PLANE_SIZE);
+    }
+    if (rec.source === 'observed' && !digitalTwinState.scenario.modifiedBuildings.some(item => item.id === rec.id)) {
+      digitalTwinState.scenario.modifiedBuildings.push({ id: rec.id, height_scale: newScale });
     }
     updateSelectionInfo();
     updateStatsPanel();
@@ -1636,6 +1703,7 @@ const TerrainStudio = (() => {
 (
   way["building"](${bbox});
   way["highway"](${bbox});
+  way["railway"~"rail|light_rail|tram|subway"](${bbox});
   way["natural"="water"](${bbox});
   way["waterway"](${bbox});
   way["leisure"="park"](${bbox});
@@ -1667,12 +1735,13 @@ out geom;`;
     }
 
     clearGIS();
-    const buildings = [], roadWays = [], areas = [];
+    const buildings = [], roadWays = [], railWays = [], areas = [];
     data.elements.forEach((el) => {
       if (el.type !== 'way' || !el.geometry) return;
       const t = el.tags || {};
       if (t.building) buildings.push(el);
       else if (t.highway) roadWays.push(el);
+      else if (t.railway) railWays.push(el);
       else if (t.natural === 'water' || t.waterway) areas.push({ el, color: 0x2aa7e0 });
       else if (t.leisure === 'park' || t.landuse) areas.push({ el, color: 0x35c46a });
     });
@@ -1680,16 +1749,19 @@ out geom;`;
     // Preserve every returned GIS feature for RF feature extraction before capping rendering.
     gisSourceData.buildings = buildings.map(buildObservedBuildingFeature).filter(Boolean);
     gisSourceData.roads = roadWays.slice();
+    gisSourceData.railways = railWays.slice();
     gisSourceData.water = areas.filter(area => area.color === 0x2aa7e0).map(area => area.el);
     gisSourceData.vegetation = areas.filter(area => area.color === 0x35c46a).map(area => area.el);
     digitalTwinState.observed.buildings = gisSourceData.buildings;
     digitalTwinState.observed.roads = gisSourceData.roads;
+    digitalTwinState.observed.railways = gisSourceData.railways;
     digitalTwinState.observed.water = gisSourceData.water;
     digitalTwinState.observed.vegetation = gisSourceData.vegetation;
     digitalTwinState.observed.landCover = areas.map(area => area.el);
     digitalTwinState.observed.metadata = { source: 'OpenStreetMap (Overpass)', sourceBuildingCount: gisSourceData.buildings.length };
     gisRenderData.buildings = gisSourceData.buildings.slice(0, BUILDING_EDIT_CAP);
     gisRenderData.roads = gisSourceData.roads;
+    gisRenderData.railways = gisSourceData.railways;
     gisRenderData.water = gisSourceData.water;
     gisRenderData.vegetation = gisSourceData.vegetation;
 
@@ -1698,6 +1770,7 @@ out geom;`;
 
     const builtBuildings = buildBuildingsMesh(gisRenderData.buildings);
     const roadMeters = buildRoadsMesh(roadWays);
+    const railMeters = buildRailwaysMesh(railWays);
     buildAreaMeshes(areas);
     restyleBuildings(visualStyle);
     restyleRoads(visualStyle);
@@ -1711,7 +1784,7 @@ out geom;`;
       source: 'OpenStreetMap (Overpass)',
     };
     updateStatsPanel();
-    setStatus(`✅ GIS imported: ${gisStats.sourceBuildingCount} source buildings · ${builtBuildings} rendered · ${gisStats.roadsKm} km roads (OpenStreetMap).`, 'ok');
+    setStatus(`✅ GIS imported: ${gisStats.sourceBuildingCount} source buildings · ${builtBuildings} rendered · ${gisStats.roadsKm} km roads · ${(railMeters / 1000).toFixed(2)} km railways (OpenStreetMap).`, 'ok');
   }
 
   function buildingHeightMetadata(tags) {
@@ -1788,7 +1861,12 @@ out geom;`;
       edges.name = 'edges';
       mesh.add(edges);
 
-      mesh.userData = { heightUnits: hUnits, heightMeters: hMeters, height_source: feature.height_source, height_confidence: feature.height_confidence, observedFeatureId: feature.id };
+      const record = {
+        id: feature.id, type: 'building', source: 'observed', mesh,
+        nx: cx / PLANE_SIZE, nz: cz / PLANE_SIZE, heightUnits: hUnits,
+        heightMeters: hMeters, height_source: feature.height_source, height_confidence: feature.height_confidence
+      };
+      mesh.userData = { heightUnits: hUnits, heightMeters: hMeters, height_source: feature.height_source, height_confidence: feature.height_confidence, observedFeatureId: feature.id, record };
       gisGroup.add(mesh);
       if (++count >= BUILDING_EDIT_CAP) break; // rendering cap only; source data remains complete
     }
@@ -1855,6 +1933,8 @@ out geom;`;
       const mesh = new THREE.Mesh(geo, mat);
       mesh.name = 'gisArea';
       mesh.userData.kind = isGreen ? 'green' : 'water';
+      const record = { id: `osm-way-${a.el.id}`, type: isGreen ? 'vegetation' : 'water', source: 'observed', mesh };
+      mesh.userData.record = record;
       gisGroup.add(mesh);
       if (isGreen) scatterTrees(pts, cx, cz);
     }
@@ -2015,7 +2095,7 @@ out geom;`;
     }
   }
 
-  // Restyle non-building GIS features for a clean TopoExport-like massing view.
+  // Restyle non-building GIS features for a clean massing view.
   function restyleGISSurfaceFeatures(style) {
     if (!gisGroup) return;
     gisGroup.children.forEach((obj) => {
@@ -2115,12 +2195,13 @@ out geom;`;
     setStyle('white');
     resetCamera();
     setStatus(`✅ Crisp architectural digital twin ready · ${gisStats.buildings || 0} GIS buildings · ${(gisStats.roadsKm || 0).toFixed(2)} km roads.`, 'ok');
+    txOnCityBuilt();
   }
 
 
   // ===========================================================================
   // 3D MODEL EXPORT — turn the textured terrain into printable / CAD-ready
-  // models (STL, OBJ+MTL+texture, GLB), TopoExport-style watertight solid.
+  // models (STL, OBJ+MTL+texture, GLB), watertight solid.
   // ===========================================================================
 
   // Build a watertight solid: top surface (edited heights) + side skirt + base.
@@ -2331,6 +2412,7 @@ out geom;`;
     const wire = scene && scene.getObjectByName('wireframe');
     if (wire) wire.scale.y = v;
     reseatStructures();
+    txOnExaggerationChanged();
   }
 
   function toggleWireframe() {
@@ -2399,6 +2481,7 @@ out geom;`;
     updateSelectionInfo();
     refreshWireframe();
     updateStatsPanel();
+    txOnReset();
   }
 
   // ---------------------------------------------------------------------------
@@ -2472,6 +2555,18 @@ out geom;`;
       }
     }
 
+    // Baseline vs scenario: the scenario record must reflect the user's edits,
+    // not repeat the baseline (2026-11-05 finding, fixed 2026-11-07).
+    // buildTwinFeatures() is computed ONCE; the scenario is derived from it.
+    const baselineFeatures = buildTwinFeatures();
+    const editedTerrainStats = {
+      min: Math.round(min * 10) / 10, max: Math.round(max * 10) / 10,
+      mean: Math.round((sum / n) * 10) / 10, relief: Math.round((max - min) * 10) / 10,
+      mean_slope_pct: Math.round((slopeSum / slopeN) * 10) / 10,
+      max_slope_pct: Math.round(maxSlopePct * 10) / 10,
+    };
+    const scenarioFeatures = buildScenarioFeatures(baselineFeatures, editedTerrainStats);
+
     return {
       meta: {
         source: 'Lupus Cortex Terrain 3D Studio',
@@ -2512,9 +2607,9 @@ out geom;`;
         eastMeters: Math.round((point.x / PLANE_SIZE) * terrainData.areaKm * 1000),
         northMeters: Math.round((-point.z / PLANE_SIZE) * terrainData.areaKm * 1000),
       }))),
-      baseline_features: buildTwinFeatures(),
-      scenario_features: buildTwinFeatures(),
-      feature_deltas: buildTwinFeatureDelta(buildTwinFeatures(), {}),
+      baseline_features: baselineFeatures,
+      scenario_features: scenarioFeatures,
+      feature_deltas: buildTwinFeatureDelta(baselineFeatures, scenarioFeatures),
       scenario_changes: scenarioChangeCounts(),
       cityPlan: computePlanningStats(),
     };
@@ -2767,6 +2862,7 @@ Keep it structured with short headers and bullet points.`;
     });
 
     window.addEventListener('resize', onResize);
+    bindLxExportControls();
   }
 
   function onResize() {
@@ -2778,6 +2874,1550 @@ Keep it structured with short headers and bullet points.`;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+  }
+
+  // ===========================================================================
+  // EXPORT CONFIGURATOR (own implementation, 2026-11-07)
+  // A layered export panel, bounding-box selection on a 2D preview drawn from
+  // the planner's own DEM + OpenStreetMap data, contour lines computed from the
+  // planner's own DEM, DXF / SVG / GeoJSON exports built from the planner's
+  // own scene data, and a cross-section tool with a DEM elevation profile.
+  // Data sources: OpenStreetMap via Overpass; elevation via Open-Meteo and the
+  // Terrarium raster DEM. Exports are NOT survey-grade (stated in the panel).
+  // ===========================================================================
+
+  const TX_MAX_AREA_KM2 = 50; // selection limit, shown on the area pill
+  const TX_FREE_CONTOUR_INTERVALS = [5, 10, 20];
+  const TX_PRO_CONTOUR_INTERVALS = [0.1, 0.5, 1, 2];
+  const TX_FREE_DTM_RESOLUTIONS = [10, 20, 30];
+  const TX_PRO_DTM_RESOLUTIONS = [0.5, 1, 2, 5];
+  const TX_DEFAULT_BUILDING_HEIGHT_M = DEFAULT_FLOOR_M * 3; // 9.6 m, documented in exports
+
+  const TX = {
+    bbox: { u0: 0, v0: 0, u1: 1, v1: 1 }, // normalized footprint fractions (u: west->east, v: south->north)
+    contourIntervalM: 5,
+    dtmResolutionM: 20,
+    pendingShrinkBbox: false,
+    section: { active: false, mode: 'select', a: null, b: null }, // endpoints in normalized u/v
+    master: { satellite: true, d2: true, d3: true, raw: false },
+    format: { satellite: 'JPEG', d2: 'DXF', d3: 'DXF', raw: 'GeoJSON' },
+    layers2d: { buildings: true, parcels: true, roads: true, railways: true, waterways: true, shadows: true, trees: true, aiTrees: false, contours: true },
+    layers3d: { buildings: true, roofsAI: false, parcels: false, roads: false, railways: false, waterways: false, trees: true, aiTrees: false, contours: false, terrainMesh: true },
+    layersRaw: { buildings: true, parcels: true, roads: true, railways: true, waterways: true, trees: true, aiTrees: true, contours: true, terrain: false },
+  };
+
+  // Format support in this free local build. PRO / PRO+ formats exist as
+  // buttons (the reference product gates them) but are not producible here;
+  // selecting one shows a clear message instead of a fake file.
+  const TX_FORMATS = {
+    satellite: [{ name: 'JPEG', pro: false }],
+    d2: [
+      { name: 'DXF', pro: false }, { name: 'DWG', pro: false }, { name: 'RVT', pro: 'PRO+' },
+      { name: 'SKP', pro: false }, { name: '3DM', pro: false }, { name: 'PDF', pro: false }, { name: 'SVG', pro: false },
+    ],
+    d3: [
+      { name: 'DXF', pro: false }, { name: 'IFC', pro: 'PRO+' }, { name: 'RVT', pro: 'PRO+' },
+      { name: 'SKP', pro: false }, { name: '3DM', pro: false }, { name: 'OBJ', pro: false },
+      { name: 'glTF', pro: false }, { name: 'STL', pro: false },
+    ],
+    raw: [{ name: 'GeoJSON', pro: false }, { name: 'TIFF', pro: false }, { name: 'TXT', pro: false }],
+  };
+  const TX_PRODUCIBLE = { satellite: ['JPEG'], d2: ['DXF', 'SVG'], d3: ['DXF', 'OBJ', 'glTF', 'STL'], raw: ['GeoJSON', 'TXT'] };
+  function txFormatInfo(section, format) {
+    const list = TX_FORMATS[section] || [];
+    return list.find((f) => f.name === format) || { name: format, pro: false };
+  }
+  function txFormatProducible(section, format) {
+    return (TX_PRODUCIBLE[section] || []).includes(format);
+  }
+  function txSelectFormat(section, format) {
+    const info = txFormatInfo(section, format);
+    if (info.pro) return { ok: false, gated: true, reason: `${format} is a ${info.pro} format in the reference product and is not available in this free local build. DXF, SVG, OBJ, glTF and STL are available.` };
+    if (!txFormatProducible(section, format)) return { ok: false, gated: false, reason: `${format} export is not available in this browser build. Use ${TX_PRODUCIBLE[section].join(', ')}.` };
+    TX.format[section] = format;
+    return { ok: true };
+  }
+
+  // --- small DOM helper ------------------------------------------------------
+  function txEl(id) { return document.getElementById(id); }
+
+  // --- bounding box (normalized footprint fractions) -------------------------
+  function txBboxKm() {
+    if (!terrainData) return null;
+    const wKm = (TX.bbox.u1 - TX.bbox.u0) * terrainData.areaKm;
+    const hKm = (TX.bbox.v1 - TX.bbox.v0) * terrainData.areaKm;
+    return { wKm, hKm, areaKm2: wKm * hKm };
+  }
+  function txBboxCorners() {
+    if (!terrainData) return null;
+    const b = gisBBox();
+    const lon = (u) => b.w + u * (b.e - b.w);
+    const lat = (v) => b.s + v * (b.n - b.s);
+    return {
+      sw: { lat: lat(TX.bbox.v0), lon: lon(TX.bbox.u0) },
+      ne: { lat: lat(TX.bbox.v1), lon: lon(TX.bbox.u1) },
+      nw: { lat: lat(TX.bbox.v1), lon: lon(TX.bbox.u0) },
+      se: { lat: lat(TX.bbox.v0), lon: lon(TX.bbox.u1) },
+    };
+  }
+  function txWorldToUV(x, z) {
+    return { u: x / PLANE_SIZE + 0.5, v: 0.5 - z / PLANE_SIZE };
+  }
+  function txUVToWorld(u, v) {
+    return { x: (u - 0.5) * PLANE_SIZE, z: (0.5 - v) * PLANE_SIZE };
+  }
+  // World units -> lon/lat (inverse of geoToLocal, equirectangular around centre)
+  function txLocalToGeo(x, z) {
+    const b = gisBBox();
+    return {
+      lon: b.w + (x / PLANE_SIZE + 0.5) * (b.e - b.w),
+      lat: b.n - (z / PLANE_SIZE + 0.5) * (b.n - b.s),
+    };
+  }
+  // World units -> local metres relative to the selection's SW corner
+  function txWorldToLocalMeters(x, z) {
+    const uv = txWorldToUV(x, z);
+    const size = txBboxKm();
+    if (!size) return { eastM: 0, northM: 0 };
+    return { eastM: (uv.u - TX.bbox.u0) * size.wKm * 1000, northM: (uv.v - TX.bbox.v0) * size.hKm * 1000 };
+  }
+  function txClampBbox() {
+    const b = TX.bbox;
+    const MIN = 0.01; // minimum usable selection (~1% of the footprint side)
+    b.u0 = Math.max(0, Math.min(1 - MIN, b.u0));
+    b.v0 = Math.max(0, Math.min(1 - MIN, b.v0));
+    b.u1 = Math.max(b.u0 + MIN, Math.min(1, b.u1));
+    b.v1 = Math.max(b.v0 + MIN, Math.min(1, b.v1));
+  }
+  function txPointInBbox(lat, lon) {
+    const uv = txWorldToUV(geoToLocal(lat, lon).x, geoToLocal(lat, lon).z);
+    return uv.u >= TX.bbox.u0 && uv.u <= TX.bbox.u1 && uv.v >= TX.bbox.v0 && uv.v <= TX.bbox.v1;
+  }
+  // Liang-Barsky clip of a world-space segment to the selection rectangle.
+  // Returns null when the segment lies fully outside, else the clipped endpoints.
+  function txClipSegmentToBbox(x1, z1, x2, z2) {
+    const a = txWorldToUV(x1, z1), b = txWorldToUV(x2, z2);
+    const dx = b.u - a.u, dz = b.v - a.v;
+    let t0 = 0, t1 = 1;
+    const p = [-dx, dx, -dz, dz];
+    const q = [a.u - TX.bbox.u0, TX.bbox.u1 - a.u, a.v - TX.bbox.v0, TX.bbox.v1 - a.v];
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(p[i]) < 1e-12) { if (q[i] < 0) return null; continue; }
+      const t = q[i] / p[i];
+      if (p[i] < 0) { if (t > t1) return null; if (t > t0) t0 = t; }
+      else { if (t < t0) return null; if (t < t1) t1 = t; }
+    }
+    const at = (t) => txUVToWorld(a.u + dx * t, a.v + dz * t);
+    const p0 = at(t0), p1 = at(t1);
+    return { x1: p0.x, z1: p0.z, x2: p1.x, z2: p1.z };
+  }
+
+  // --- elevation sampling (bilinear on the planner's own DEM grid) -----------
+  function txElevationAtWorld(x, z) {
+    if (!terrainData || !terrainData.grid) return null;
+    const res = terrainData.resolution;
+    const fx = Math.max(0, Math.min(res - 1, (x / PLANE_SIZE + 0.5) * (res - 1)));
+    const fz = Math.max(0, Math.min(res - 1, (z / PLANE_SIZE + 0.5) * (res - 1)));
+    const c0 = Math.floor(fx), r0 = Math.floor(fz);
+    const c1 = Math.min(res - 1, c0 + 1), r1 = Math.min(res - 1, r0 + 1);
+    const tc = fx - c0, tr = fz - r0;
+    const g = terrainData.grid;
+    const top = g[r0][c0] * (1 - tc) + g[r0][c1] * tc;
+    const bottom = g[r1][c0] * (1 - tc) + g[r1][c1] * tc;
+    return top * (1 - tr) + bottom * tr;
+  }
+  function txElevationAtLatLng(lat, lon) {
+    const p = geoToLocal(lat, lon);
+    return txElevationAtWorld(p.x, p.z);
+  }
+
+  // --- contour lines (marching squares, ported from the repo planner's
+  // contour logic and adapted: this file's DEM grid is 2D rows, the interval
+  // is user-chosen, segments are clipped to the selection box) ---------------
+  let contourGroup = null;
+  let contourSegments = []; // [{ level, x1, z1, x2, z2 }] in world units, bbox-clipped
+
+  // Pure core: marching-squares segments in grid fractions (u: west->east,
+  // v: south->north). No THREE / DOM dependency, so it is unit-testable.
+  function computeContourSegments(grid, res, min, max, intervalM, bbox) {
+    const segments = [];
+    if (!grid || !res || res < 2 || !(intervalM > 0) || !(max > min)) return segments;
+    const levels = [];
+    for (let v = Math.ceil(min / intervalM) * intervalM; v < max; v += intervalM) levels.push(v);
+    const H = (r, c) => {
+      r = Math.max(0, Math.min(res - 1, r));
+      c = Math.max(0, Math.min(res - 1, c));
+      return grid[r][c];
+    };
+    // Grid row 0 is the north edge; v (south->north) = 1 - r/(res-1).
+    const U = (c) => c / (res - 1);
+    const V = (r) => 1 - r / (res - 1);
+    for (const level of levels) {
+      for (let r = 0; r < res - 1; r++) {
+        for (let c = 0; c < res - 1; c++) {
+          const h00 = H(r, c), h10 = H(r, c + 1), h01 = H(r + 1, c), h11 = H(r + 1, c + 1);
+          const corners = [[h00, 0, 0], [h10, 1, 0], [h11, 1, 1], [h01, 0, 1]];
+          const edges = [
+            [corners[0], corners[1]], [corners[1], corners[2]],
+            [corners[2], corners[3]], [corners[3], corners[0]],
+          ];
+          const cross = [];
+          for (const [[ha, ca, ra], [hb, cb, rb]] of edges) {
+            // Lower-inclusive crossing test: a contour that passes exactly
+            // through a grid node (common with integer-metre DEMs) must still
+            // produce a segment; the strict sign-change test drops it.
+            const crossed = (ha <= level && hb > level) || (ha > level && hb <= level);
+            if (crossed) {
+              const t = (level - ha) / (hb - ha);
+              cross.push([c + ca + (cb - ca) * t, r + ra + (rb - ra) * t]);
+            }
+          }
+          if (cross.length === 2) {
+            const [c1, r1] = cross[0], [c2, r2] = cross[1];
+            const a = { u: U(c1), v: V(r1) }, b = { u: U(c2), v: V(r2) };
+            if (!bbox) { segments.push({ level, u1: a.u, v1: a.v, u2: b.u, v2: b.v }); continue; }
+            const clipped = clipSegmentUV(a.u, a.v, b.u, b.v, bbox);
+            if (clipped) segments.push({ level, u1: clipped.u1, v1: clipped.v1, u2: clipped.u2, v2: clipped.v2 });
+          }
+        }
+      }
+    }
+    return segments;
+  }
+  function clipSegmentUV(u1, v1, u2, v2, bbox) {
+    const dx = u2 - u1, dv = v2 - v1;
+    let t0 = 0, t1 = 1;
+    const p = [-dx, dx, -dv, dv];
+    const q = [u1 - bbox.u0, bbox.u1 - u1, v1 - bbox.v0, bbox.v1 - v1];
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(p[i]) < 1e-12) { if (q[i] < 0) return null; continue; }
+      const t = q[i] / p[i];
+      if (p[i] < 0) { if (t > t1) return null; if (t > t0) t0 = t; }
+      else { if (t < t0) return null; if (t < t1) t1 = t; }
+    }
+    return { u1: u1 + dx * t0, v1: v1 + dv * t0, u2: u1 + dx * t1, v2: v1 + dv * t1 };
+  }
+
+  function clearContours() {
+    if (contourGroup && scene) scene.remove(contourGroup);
+    contourGroup = null;
+    contourSegments = [];
+  }
+  function buildContours(intervalM) {
+    clearContours();
+    if (!terrainData || !terrainData.grid || !scene) return 0;
+    const { grid, resolution, min, max } = terrainData;
+    const uvSegs = computeContourSegments(grid, resolution, min, max, intervalM, TX.bbox);
+    const heightScale = terrainMesh ? terrainMesh.userData.heightScale : 0;
+    contourSegments = uvSegs.map((s) => {
+      const a = txUVToWorld(s.u1, s.v1), b = txUVToWorld(s.u2, s.v2);
+      return { level: s.level, x1: a.x, z1: a.z, x2: b.x, z2: b.z };
+    });
+    if (!contourSegments.length) return 0;
+    const pts = [];
+    for (const s of contourSegments) {
+      const y = (s.level - min) * heightScale + 0.05;
+      pts.push(new THREE.Vector3(s.x1, y, s.z1));
+      pts.push(new THREE.Vector3(s.x2, y, s.z2));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    contourGroup = new THREE.Group();
+    contourGroup.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x2e7d32 })));
+    contourGroup.scale.y = verticalExaggeration;
+    contourGroup.visible = !!TX.layers3d.contours;
+    scene.add(contourGroup);
+    const levels = new Set(contourSegments.map((s) => s.level)).size;
+    return levels;
+  }
+  function rebuildContours() {
+    if (!TX.layers3d.contours && !TX.layers2d.contours) { clearContours(); return 0; }
+    return buildContours(TX.contourIntervalM);
+  }
+
+  // --- 2D preview map (drawn from the planner's own DEM + OSM data) ---------
+  let txMapDrag = null; // { kind: 'move'|'nw'|'ne'|'sw'|'se'|'center'|'sec-a'|'sec-b'|'draw', startX, startY, bbox0, sec0 }
+  function txMapCanvas() { return txEl('txMapCanvas'); }
+  function txCanvasPoint(e) {
+    const cv = txMapCanvas();
+    const rect = cv.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * (cv.width / rect.width), y: (e.clientY - rect.top) * (cv.height / rect.height) };
+  }
+  function txElevColor(t) {
+    // hypsometric ramp: low green -> tan -> high white
+    const stops = [[0.0, [46, 125, 50]], [0.45, [139, 150, 90]], [0.75, [185, 160, 106]], [1.0, [245, 245, 245]]];
+    for (let i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0]) {
+        const [t0, c0] = stops[i - 1], [t1, c1] = stops[i];
+        const f = (t - t0) / Math.max(1e-9, t1 - t0);
+        return `rgb(${Math.round(c0[0] + (c1[0] - c0[0]) * f)},${Math.round(c0[1] + (c1[1] - c0[1]) * f)},${Math.round(c0[2] + (c1[2] - c0[2]) * f)})`;
+      }
+    }
+    return 'rgb(245,245,245)';
+  }
+  function txDrawFeatureGeometry(ctx, geometry, close, W, H) {
+    if (!geometry || geometry.length < 2) return;
+    ctx.beginPath();
+    geometry.forEach((p, i) => {
+      const w = geoToLocal(p.lat, p.lon);
+      const px = (w.x / PLANE_SIZE + 0.5) * W;
+      const py = (w.z / PLANE_SIZE + 0.5) * H;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    });
+    if (close) ctx.closePath();
+  }
+  function renderTopoMap() {
+    const cv = txMapCanvas();
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const W = cv.width, H = cv.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, W, H);
+    if (!terrainData || !terrainData.grid) {
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Generate a location to see the 2D preview map.', W / 2, H / 2);
+      return;
+    }
+    const res = terrainData.resolution;
+    const { min, max } = terrainData;
+    const range = Math.max(1e-9, max - min);
+    // DEM heightmap
+    const off = document.createElement('canvas');
+    off.width = res; off.height = res;
+    const octx = off.getContext('2d');
+    const img = octx.createImageData(res, res);
+    for (let r = 0; r < res; r++) {
+      for (let c = 0; c < res; c++) {
+        const t = (terrainData.grid[r][c] - min) / range;
+        const col = txElevColor(t).match(/\d+/g).map(Number);
+        const i = (r * res + c) * 4;
+        img.data[i] = col[0]; img.data[i + 1] = col[1]; img.data[i + 2] = col[2]; img.data[i + 3] = 255;
+      }
+    }
+    octx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, W, H);
+    const L = TX.layers2d;
+    // Waterways + vegetation (fills)
+    if (L.waterways) {
+      ctx.fillStyle = 'rgba(42,167,224,0.75)';
+      gisSourceData.water.forEach((el) => { txDrawFeatureGeometry(ctx, el.geometry, true, W, H); ctx.fill(); });
+    }
+    if (L.trees) {
+      ctx.fillStyle = 'rgba(53,196,106,0.55)';
+      gisSourceData.vegetation.forEach((el) => { txDrawFeatureGeometry(ctx, el.geometry, true, W, H); ctx.fill(); });
+    }
+    // Roads + railways
+    if (L.roads) {
+      ctx.strokeStyle = '#1f2937'; ctx.lineWidth = 1.4;
+      gisSourceData.roads.forEach((way) => { txDrawFeatureGeometry(ctx, way.geometry, false, W, H); ctx.stroke(); });
+    }
+    if (L.railways) {
+      ctx.strokeStyle = '#4b5563'; ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
+      gisSourceData.railways.forEach((way) => { txDrawFeatureGeometry(ctx, way.geometry, false, W, H); ctx.stroke(); });
+      ctx.setLineDash([]);
+    }
+    // Buildings (light outlines)
+    if (L.buildings) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1;
+      ctx.fillStyle = 'rgba(245,245,245,0.55)';
+      gisSourceData.buildings.forEach((f) => { txDrawFeatureGeometry(ctx, f.geometry, true, W, H); ctx.fill(); ctx.stroke(); });
+    }
+    // Contours
+    if (L.contours && contourSegments.length) {
+      ctx.strokeStyle = '#1d5c2e'; ctx.lineWidth = 0.8;
+      contourSegments.forEach((s) => {
+        ctx.beginPath();
+        ctx.moveTo((s.x1 / PLANE_SIZE + 0.5) * W, (s.z1 / PLANE_SIZE + 0.5) * H);
+        ctx.lineTo((s.x2 / PLANE_SIZE + 0.5) * W, (s.z2 / PLANE_SIZE + 0.5) * H);
+        ctx.stroke();
+      });
+    }
+    // Section line
+    if (TX.section.active && TX.section.a && TX.section.b) {
+      const ax = TX.section.a.u * W, ay = (1 - TX.section.a.v) * H;
+      const bx = TX.section.b.u * W, by = (1 - TX.section.b.v) * H;
+      ctx.strokeStyle = '#2563eb'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      [[ax, ay], [bx, by]].forEach(([x, y]) => {
+        ctx.fillStyle = '#2563eb';
+        ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+      });
+    }
+    // Selection rectangle + handles
+    const rx = TX.bbox.u0 * W, ry = (1 - TX.bbox.v1) * H;
+    const rw = (TX.bbox.u1 - TX.bbox.u0) * W, rh = (TX.bbox.v1 - TX.bbox.v0) * H;
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.strokeRect(rx, ry, rw, rh);
+    const corners = [[rx, ry], [rx + rw, ry], [rx, ry + rh], [rx + rw, ry + rh]];
+    ctx.fillStyle = '#000';
+    corners.forEach(([x, y]) => ctx.fillRect(x - 5, y - 5, 10, 10));
+    // centre "+" handle
+    const cx = rx + rw / 2, cy = ry + rh / 2;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(cx - 5, cy - 5, 10, 10);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(cx - 3, cy); ctx.lineTo(cx + 3, cy); ctx.moveTo(cx, cy - 3); ctx.lineTo(cx, cy + 3); ctx.stroke();
+    // Edge labels: width on top edge, height on right edge
+    const size = txBboxKm();
+    if (size) {
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${size.wKm.toFixed(2)} km`, cx, Math.max(12, ry - 6));
+      ctx.save();
+      ctx.translate(Math.min(W - 8, rx + rw + 14), cy);
+      ctx.rotate(Math.PI / 2);
+      ctx.fillText(`${size.hKm.toFixed(2)} km`, 0, 0);
+      ctx.restore();
+    }
+  }
+  function updateTopoReadouts() {
+    const size = txBboxKm();
+    const corners = txBboxCorners();
+    const ro = txEl('txBboxReadout');
+    const pill = txEl('txAreaPill');
+    if (!size || !corners) {
+      if (ro) ro.textContent = 'Generate a location first — the selection box appears on the 2D preview map.';
+      if (pill) { pill.textContent = `Max. ${TX_MAX_AREA_KM2} km²`; pill.classList.remove('over'); }
+      return;
+    }
+    if (ro) {
+      ro.textContent =
+        `${size.wKm.toFixed(2)} km × ${size.hKm.toFixed(2)} km · ${size.areaKm2.toFixed(2)} km² · ` +
+        `SW ${corners.sw.lat.toFixed(4)}°, ${corners.sw.lon.toFixed(4)}° · NE ${corners.ne.lat.toFixed(4)}°, ${corners.ne.lon.toFixed(4)}°`;
+    }
+    if (pill) {
+      pill.textContent = `Max. ${TX_MAX_AREA_KM2} km²`;
+      const over = size.areaKm2 > TX_MAX_AREA_KM2;
+      pill.classList.toggle('over', over);
+      pill.title = over
+        ? `Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`
+        : `Selection is within the ${TX_MAX_AREA_KM2} km² limit.`;
+    }
+  }
+  function txMapHitTest(x, y) {
+    const cv = txMapCanvas();
+    const W = cv.width, H = cv.height;
+    const rx = TX.bbox.u0 * W, ry = (1 - TX.bbox.v1) * H;
+    const rw = (TX.bbox.u1 - TX.bbox.u0) * W, rh = (TX.bbox.v1 - TX.bbox.v0) * H;
+    const near = (px, py) => Math.abs(x - px) <= 9 && Math.abs(y - py) <= 9;
+    if (TX.section.active && TX.section.a && TX.section.b) {
+      const ax = TX.section.a.u * W, ay = (1 - TX.section.a.v) * H;
+      const bx = TX.section.b.u * W, by = (1 - TX.section.b.v) * H;
+      if (near(ax, ay)) return 'sec-a';
+      if (near(bx, by)) return 'sec-b';
+    }
+    if (near(rx, ry)) return 'nw';
+    if (near(rx + rw, ry)) return 'ne';
+    if (near(rx, ry + rh)) return 'sw';
+    if (near(rx + rw, ry + rh)) return 'se';
+    if (near(rx + rw / 2, ry + rh / 2)) return 'center';
+    if (x >= rx && x <= rx + rw && y >= ry && y <= ry + rh) return 'move';
+    return null;
+  }
+  function txMapPointerDown(e) {
+    if (!terrainData) return;
+    const p = txCanvasPoint(e);
+    const cv = txMapCanvas();
+    const hit = txMapHitTest(p.x, p.y);
+    if (TX.section.active && TX.section.mode === 'draw' && !hit) {
+      // Draw mode: each click sets an endpoint (first click A, second click B)
+      const u = p.x / cv.width, v = 1 - p.y / cv.height;
+      if (!TX.section.a || (TX.section.a && TX.section.b)) { TX.section.a = { u, v }; TX.section.b = null; }
+      else { TX.section.b = { u, v }; }
+      renderTopoMap();
+      return;
+    }
+    if (!hit) return;
+    e.preventDefault();
+    txMapDrag = { kind: hit, startX: p.x, startY: p.y, bbox0: { ...TX.bbox }, sec0: TX.section.a && TX.section.b ? { a: { ...TX.section.a }, b: { ...TX.section.b } } : null };
+    cv.setPointerCapture?.(e.pointerId);
+  }
+  function txMapPointerMove(e) {
+    if (!txMapDrag || !terrainData) return;
+    const cv = txMapCanvas();
+    const p = txCanvasPoint(e);
+    const du = (p.x - txMapDrag.startX) / cv.width;
+    const dv = -(p.y - txMapDrag.startY) / cv.height; // canvas y grows down, v grows north
+    const b = TX.bbox, b0 = txMapDrag.bbox0;
+    const kind = txMapDrag.kind;
+    if (kind === 'sec-a' || kind === 'sec-b') {
+      const end = kind === 'sec-a' ? TX.section.a : TX.section.b;
+      const orig = kind === 'sec-a' ? txMapDrag.sec0.a : txMapDrag.sec0.b;
+      end.u = Math.max(0, Math.min(1, orig.u + du));
+      end.v = Math.max(0, Math.min(1, orig.v + dv));
+    } else if (kind === 'move' || kind === 'center') {
+      const w = b0.u1 - b0.u0, h = b0.v1 - b0.v0;
+      b.u0 = Math.max(0, Math.min(1 - w, b0.u0 + du));
+      b.v0 = Math.max(0, Math.min(1 - h, b0.v0 + dv));
+      b.u1 = b.u0 + w; b.v1 = b.v0 + h;
+    } else {
+      if (kind === 'nw' || kind === 'sw') b.u0 = Math.min(b0.u1 - 0.01, b0.u0 + du);
+      if (kind === 'ne' || kind === 'se') b.u1 = Math.max(b0.u0 + 0.01, b0.u1 + du);
+      if (kind === 'nw' || kind === 'ne') b.v1 = Math.max(b0.v0 + 0.01, b0.v1 + dv);
+      if (kind === 'sw' || kind === 'se') b.v0 = Math.min(b0.v1 - 0.01, b0.v0 + dv);
+      txClampBbox();
+    }
+    updateTopoReadouts();
+    renderTopoMap();
+  }
+  function txMapPointerUp() {
+    if (!txMapDrag) return;
+    txMapDrag = null;
+    rebuildContours();
+    renderTopoMap();
+  }
+
+  // --- place search (reuses the page's existing Nominatim forwardGeocode) ---
+  let txSearchTimer = null;
+  function txSearchIcon(result) {
+    const t = `${result.class || ''}/${result.type || ''}`;
+    if (/water|river|stream|lake/.test(t)) return '💧';
+    if (/highway|road|street/.test(t)) return '🛣️';
+    if (/building/.test(t)) return '🏢';
+    if (/park|forest|meadow|leisure/.test(t)) return '🌳';
+    if (/place|boundary|locality|city|town|village|suburb/.test(t)) return '📍';
+    return '📍';
+  }
+  function txBindSearch() {
+    const input = txEl('txSearchInput');
+    const box = txEl('txSearchSuggest');
+    if (!input || !box || input.dataset.txBound) return;
+    input.dataset.txBound = '1';
+    input.addEventListener('input', () => {
+      clearTimeout(txSearchTimer);
+      const q = input.value.trim();
+      if (q.length < 2) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+      txSearchTimer = setTimeout(async () => {
+        if (typeof window.forwardGeocode !== 'function') {
+          box.classList.remove('hidden');
+          box.innerHTML = '<div class="tx-suggest-empty">Place search is unavailable (geocoder not loaded on this page).</div>';
+          return;
+        }
+        try {
+          const results = await window.forwardGeocode(q);
+          if (!results || !results.length) {
+            box.classList.remove('hidden');
+            box.innerHTML = '<div class="tx-suggest-empty">No matching place found.</div>';
+            return;
+          }
+          box.innerHTML = '';
+          results.slice(0, 5).forEach((r) => {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'tx-suggest-item';
+            item.innerHTML = `<span class="tx-suggest-icon">${txSearchIcon(r)}</span><span class="tx-suggest-name"></span>`;
+            item.querySelector('.tx-suggest-name').textContent = r.display_name || r.name || `${r.lat}, ${r.lon}`;
+            item.addEventListener('click', () => {
+              box.classList.add('hidden');
+              box.innerHTML = '';
+              input.value = r.display_name || '';
+              const locInput = txEl('terrainLocationInput');
+              if (locInput) locInput.value = r.display_name || `${r.lat}, ${r.lon}`;
+              TX.pendingShrinkBbox = true;
+              txEl('terrainGenerateBtn')?.click();
+            });
+            box.appendChild(item);
+          });
+          box.classList.remove('hidden');
+        } catch (err) {
+          box.classList.remove('hidden');
+          box.innerHTML = `<div class="tx-suggest-empty">Search failed: ${String(err.message || err)}</div>`;
+        }
+      }, 250);
+    });
+    document.addEventListener('click', (e) => {
+      if (!box.classList.contains('hidden') && !e.target.closest('#txSearchWrap')) {
+        box.classList.add('hidden');
+      }
+    });
+  }
+
+  // --- cross-section tool ------------------------------------------------------
+  function txDefaultSectionLine() {
+    const mid = (TX.bbox.v0 + TX.bbox.v1) / 2;
+    TX.section.a = { u: TX.bbox.u0 + 0.05, v: mid };
+    TX.section.b = { u: TX.bbox.u1 - 0.05, v: mid };
+  }
+  function setSectionMode(on) {
+    TX.section.active = !!on;
+    const btn = txEl('txSectionToggle');
+    if (btn) btn.classList.toggle('active', TX.section.active);
+    const ctrls = txEl('txSectionControls');
+    if (ctrls) ctrls.classList.toggle('hidden', !TX.section.active);
+    if (TX.section.active && (!TX.section.a || !TX.section.b)) txDefaultSectionLine();
+    renderTopoMap();
+  }
+  function generateSectionProfile() {
+    if (!terrainData || !TX.section.a || !TX.section.b) {
+      setStatus('Draw a section line on the 2D preview map first.', 'error');
+      return null;
+    }
+    const N = 128;
+    const a = txUVToWorld(TX.section.a.u, TX.section.a.v);
+    const b = txUVToWorld(TX.section.b.u, TX.section.b.v);
+    const samples = [];
+    let min = Infinity, max = -Infinity, sum = 0;
+    for (let i = 0; i < N; i++) {
+      const t = i / (N - 1);
+      const x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
+      const e = txElevationAtWorld(x, z);
+      const elev = Number.isFinite(e) ? e : 0;
+      samples.push(elev);
+      if (elev < min) min = elev;
+      if (elev > max) max = elev;
+      sum += elev;
+    }
+    const geoA = txLocalToGeo(a.x, a.z), geoB = txLocalToGeo(b.x, b.z);
+    const midLat = (geoA.lat + geoB.lat) / 2 * Math.PI / 180;
+    const lengthKm = Math.hypot((geoB.lat - geoA.lat) * 111.32, (geoB.lon - geoA.lon) * 111.32 * Math.cos(midLat));
+    const profile = { lengthKm, min, max, mean: sum / N, relief: max - min, samples };
+    const cv = txEl('txProfileCanvas');
+    if (cv) {
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, W, H);
+      const padL = 44, padB = 22, padT = 12, padR = 10;
+      const plotW = W - padL - padR, plotH = H - padT - padB;
+      const span = Math.max(1e-9, max - min);
+      const X = (i) => padL + (i / (N - 1)) * plotW;
+      const Y = (e) => padT + (1 - (e - min) / span) * plotH;
+      ctx.strokeStyle = '#334155'; ctx.lineWidth = 1;
+      ctx.strokeRect(padL, padT, plotW, plotH);
+      ctx.fillStyle = '#94a3b8'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText(`${Math.round(max)} m`, padL - 4, Y(max) + 4);
+      ctx.fillText(`${Math.round(min)} m`, padL - 4, Y(min) + 4);
+      ctx.textAlign = 'left';
+      ctx.fillText('0 km', padL, H - 6);
+      ctx.fillText(`${lengthKm.toFixed(2)} km`, W - padR - 52, H - 6);
+      ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      samples.forEach((e, i) => { if (i === 0) ctx.moveTo(X(i), Y(e)); else ctx.lineTo(X(i), Y(e)); });
+      ctx.stroke();
+      ctx.lineTo(X(N - 1), padT + plotH); ctx.lineTo(X(0), padT + plotH); ctx.closePath();
+      ctx.fillStyle = 'rgba(56,189,248,0.18)'; ctx.fill();
+    }
+    const stats = txEl('txProfileStats');
+    if (stats) {
+      stats.textContent =
+        `Length ${lengthKm.toFixed(2)} km · Min ${min.toFixed(1)} m · Max ${max.toFixed(1)} m · ` +
+        `Mean ${profile.mean.toFixed(1)} m · Relief ${profile.relief.toFixed(1)} m`;
+    }
+    return profile;
+  }
+
+  // --- layer visibility in the 3D scene (driven by the 3D section) -----------
+  function applyTopoLayerVisibility() {
+    if (!gisGroup) return;
+    const L = TX.layers3d;
+    gisGroup.children.forEach((m) => {
+      const rec = m.userData?.record;
+      const kind = m.userData?.kind;
+      if (m.name === 'gisRoads') { m.visible = !!L.roads; return; }
+      if (m.name === 'gisRailways') { m.visible = !!L.railways; return; }
+      if (m.name === 'gisTree') { m.visible = !!L.trees; return; }
+      if (kind === 'water') { m.visible = !!L.waterways; return; }
+      if (kind === 'green') { m.visible = !!L.trees; return; }
+      if (rec && rec.type === 'building') { m.visible = !!L.buildings; return; }
+    });
+    if (cityGroup) cityGroup.visible = !!L.buildings;
+    if (terrainMesh) terrainMesh.visible = !!L.terrainMesh;
+    if (contourGroup) contourGroup.visible = !!L.contours;
+    setShadows(!!L.shadows);
+  }
+
+  // --- interval / DTM dropdown (one shared menu) ------------------------------
+  let txIntervalTarget = null; // { kind: 'contour' | 'dtm' }
+  function txIntervalOptions(kind) {
+    if (kind === 'dtm') return { free: TX_FREE_DTM_RESOLUTIONS, pro: TX_PRO_DTM_RESOLUTIONS, current: TX.dtmResolutionM, label: 'DTM Resolution' };
+    return { free: TX_FREE_CONTOUR_INTERVALS, pro: TX_PRO_CONTOUR_INTERVALS, current: TX.contourIntervalM, label: 'Contour interval' };
+  }
+  function txOpenIntervalMenu(kind, anchorBtn) {
+    txIntervalTarget = { kind };
+    const menu = txEl('txIntervalMenu');
+    const input = txEl('txIntervalInput');
+    const opts = txEl('txIntervalOptions');
+    if (!menu || !input || !opts) return;
+    const spec = txIntervalOptions(kind);
+    input.value = `${spec.current.toFixed(2)} m`;
+    opts.innerHTML = '';
+    [...spec.pro.map((v) => ({ v, pro: true })), ...spec.free.map((v) => ({ v, pro: false }))].forEach(({ v, pro }) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tx-interval-option' + (v === spec.current ? ' selected' : '');
+      b.innerHTML = `<span></span>${pro ? '<span class="tx-pro">PRO</span>' : ''}`;
+      b.querySelector('span').textContent = `${v} m`;
+      b.addEventListener('click', () => {
+        if (pro) {
+          txGateNote(`${v} m ${kind === 'dtm' ? 'DTM resolution' : 'contour interval'} is a PRO option in the reference product and is not available in this free local build. Free options: ${spec.free.join(', ')} m.`);
+          return;
+        }
+        txApplyInterval(kind, v);
+        txCloseIntervalMenu();
+      });
+      opts.appendChild(b);
+    });
+    menu.classList.remove('hidden');
+    if (anchorBtn && anchorBtn.getBoundingClientRect) {
+      // Menu is position:fixed, so viewport coordinates ONLY. Adding
+      // window.scrollY/scrollX (document scroll) pushed it off-screen whenever
+      // the page/modal was scrolled (found live on the Mac, 2026-11-07).
+      const r = anchorBtn.getBoundingClientRect();
+      const menuH = 260, menuW = 232; // approx. menu size; clamp inside viewport
+      menu.style.top = `${Math.max(8, Math.min(r.bottom + 4, window.innerHeight - menuH))}px`;
+      menu.style.left = `${Math.max(8, Math.min(r.left - 40, window.innerWidth - menuW))}px`;
+    }
+  }
+  function txCloseIntervalMenu() {
+    txEl('txIntervalMenu')?.classList.add('hidden');
+    txIntervalTarget = null;
+  }
+  function txApplyInterval(kind, value) {
+    if (kind === 'dtm') {
+      if (!TX_FREE_DTM_RESOLUTIONS.includes(value)) {
+        txGateNote(`${value} m DTM resolution is a PRO option in the reference product and is not available in this free local build. Free options: ${TX_FREE_DTM_RESOLUTIONS.join(', ')} m.`);
+        return false;
+      }
+      TX.dtmResolutionM = value;
+    } else {
+      if (!TX_FREE_CONTOUR_INTERVALS.includes(value)) {
+        txGateNote(`${value} m contour interval is a PRO option in the reference product and is not available in this free local build. Free options: ${TX_FREE_CONTOUR_INTERVALS.join(', ')} m.`);
+        return false;
+      }
+      TX.contourIntervalM = value;
+      rebuildContours();
+    }
+    txSyncIntervalButtons();
+    renderTopoMap();
+    return true;
+  }
+  function txSyncIntervalButtons() {
+    document.querySelectorAll('[data-tx-interval="contour"]').forEach((b) => { b.textContent = `${TX.contourIntervalM} m`; });
+    document.querySelectorAll('[data-tx-interval="dtm"]').forEach((b) => { b.textContent = `${TX.dtmResolutionM} m`; });
+    // Interval buttons are disabled while their layer is off.
+    const c2 = txEl('tx2dContourBtn'); if (c2) c2.disabled = !TX.layers2d.contours;
+    const c3 = txEl('tx3dContourBtn'); if (c3) c3.disabled = !TX.layers3d.contours;
+    const cr = txEl('txRawContourBtn'); if (cr) cr.disabled = !TX.layersRaw.contours;
+    const d3 = txEl('txDtmBtn'); if (d3) d3.disabled = !TX.layers3d.terrainMesh;
+    const dr = txEl('txRawDtmBtn'); if (dr) dr.disabled = !TX.layersRaw.terrain;
+  }
+  function txGateNote(msg) {
+    const el = txEl('txGateNote');
+    if (el) { el.textContent = msg; el.classList.remove('hidden'); }
+    setStatus(msg, 'warn');
+  }
+
+  // --- configurator wiring ----------------------------------------------------
+  function txSetMaster(section, on) {
+    TX.master[section] = !!on;
+    const body = txEl(`txSection-${section}`);
+    if (body) body.classList.toggle('collapsed', !on);
+    if (section === 'raw' && on) {
+      // Ticking Raw Formats ticks all its layers except Terrain.
+      Object.keys(TX.layersRaw).forEach((k) => { if (k !== 'terrain') TX.layersRaw[k] = true; });
+      Object.keys(TX.layersRaw).forEach((k) => {
+        const cb = txEl(`txRaw-${k}`);
+        if (cb) cb.checked = TX.layersRaw[k];
+      });
+    }
+    txSyncIntervalButtons();
+  }
+  function txLayerChanged(section, key, checked) {
+    if (section === 'd2') TX.layers2d[key] = checked;
+    else if (section === 'd3') TX.layers3d[key] = checked;
+    else if (section === 'raw') TX.layersRaw[key] = checked;
+    if (section === 'd3') applyTopoLayerVisibility();
+    if (key === 'contours') {
+      if (section === 'd3') rebuildContours();
+      txSyncIntervalButtons();
+    }
+    if (key === 'terrain' || key === 'terrainMesh') txSyncIntervalButtons();
+    renderTopoMap();
+  }
+  function txUpdateCoverageNote() {
+    const el = txEl('txCoverageNote');
+    if (!el) return;
+    const notes = [];
+    notes.push('Cadastral parcels: no cadastre data is available for this area in the planner (parcels are shown as unavailable, never invented).');
+    if (!gisSourceData.railways.length) notes.push('Railways: no railway features returned by OpenStreetMap for this area.');
+    if (!gisSourceData.buildings.length) notes.push('Buildings: no building footprints returned by OpenStreetMap for this area.');
+    notes.push('Detailed terrain / LoD2 rooftops: only available where the source data supports them; this build uses the planner DEM and flat-roof extrusions.');
+    el.textContent = notes.join(' ');
+  }
+  function bindLxExportControls() {
+    if (!txEl('lxExportPanel') || txEl('lxExportPanel').dataset.txBound) return;
+    txEl('lxExportPanel').dataset.txBound = '1';
+    txBindSearch();
+    // Section tool
+    txEl('txSectionToggle')?.addEventListener('click', () => setSectionMode(!TX.section.active));
+    txEl('txSectionModeSelect')?.addEventListener('change', (e) => { TX.section.mode = e.target.value; });
+    txEl('txSectionGenerate')?.addEventListener('click', generateSectionProfile);
+    // Mini-map pointer handling
+    const cv = txMapCanvas();
+    if (cv) {
+      cv.addEventListener('pointerdown', txMapPointerDown);
+      cv.addEventListener('pointermove', txMapPointerMove);
+      cv.addEventListener('pointerup', txMapPointerUp);
+      cv.addEventListener('pointercancel', txMapPointerUp);
+    }
+    // Section collapse (chevron) + master checkboxes
+    document.querySelectorAll('.tx-section-head').forEach((head) => {
+      head.addEventListener('click', (e) => {
+        if (e.target.closest('input[type="checkbox"], label')) return; // master checkbox/label toggles only the master, not the collapse
+        const body = txEl(`txSection-${head.dataset.txSection}`);
+        if (body) body.classList.toggle('collapsed');
+        head.classList.toggle('collapsed');
+      });
+    });
+    document.querySelectorAll('.tx-master').forEach((cb) => {
+      cb.addEventListener('change', () => txSetMaster(cb.dataset.txSection, cb.checked));
+    });
+    // Layer checkboxes
+    document.querySelectorAll('.tx-layer input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const section = cb.dataset.txSection, key = cb.dataset.txLayer;
+        if (cb.dataset.txPro) {
+          cb.checked = false;
+          txGateNote(`${cb.dataset.txLabel || key} is a PRO feature in the reference product (AI-detected trees/hedges and detailed roofs) and is not available in this free local build. No price is charged here.`);
+          return;
+        }
+        txLayerChanged(section, key, cb.checked);
+      });
+    });
+    // Format buttons (single-select per section)
+    document.querySelectorAll('.tx-fmt').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const section = btn.dataset.txSection, format = btn.dataset.txFormat;
+        const res = txSelectFormat(section, format);
+        if (!res.ok) { txGateNote(res.reason); return; }
+        document.querySelectorAll(`.tx-fmt[data-tx-section="${section}"]`).forEach((b) => b.classList.remove('selected'));
+        btn.classList.add('selected');
+      });
+    });
+    // Interval / DTM buttons open the shared menu
+    document.querySelectorAll('[data-tx-interval]').forEach((btn) => {
+      btn.addEventListener('click', () => txOpenIntervalMenu(btn.dataset.txInterval, btn));
+    });
+    txEl('txIntervalInput')?.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || !txIntervalTarget) return;
+      const v = parseFloat(e.target.value);
+      if (!Number.isFinite(v) || v <= 0) { txGateNote('Enter an interval in metres, for example "5 m".'); return; }
+      const spec = txIntervalOptions(txIntervalTarget.kind);
+      if (spec.free.includes(v)) { txApplyInterval(txIntervalTarget.kind, v); txCloseIntervalMenu(); }
+      else if (spec.pro.includes(v)) { txGateNote(`${v} m is a PRO option in the reference product and is not available in this free local build. Free options: ${spec.free.join(', ')} m.`); }
+      else { txGateNote(`Interval ${v} m is not offered. Free options: ${spec.free.join(', ')} m.`); }
+    });
+    document.addEventListener('click', (e) => {
+      const menu = txEl('txIntervalMenu');
+      if (menu && !menu.classList.contains('hidden') && !e.target.closest('#txIntervalMenu') && !e.target.closest('[data-tx-interval]')) txCloseIntervalMenu();
+    });
+    // Export Now
+    txEl('txExportNow')?.addEventListener('click', runLxExport);
+    txSyncIntervalButtons();
+  }
+  function refreshLxExport() {
+    if (!txEl('lxExportPanel')) return;
+    if (TX.pendingShrinkBbox && terrainData) {
+      TX.pendingShrinkBbox = false;
+      const sideKm = Math.min(1, terrainData.areaKm);
+      const f = sideKm / terrainData.areaKm / 2;
+      TX.bbox = { u0: 0.5 - f, v0: 0.5 - f, u1: 0.5 + f, v1: 0.5 + f };
+      txClampBbox();
+    }
+    rebuildContours();
+    applyTopoLayerVisibility();
+    updateTopoReadouts();
+    txUpdateCoverageNote();
+    renderTopoMap();
+  }
+  function resetLxExport() {
+    TX.bbox = { u0: 0, v0: 0, u1: 1, v1: 1 };
+    TX.section = { active: false, mode: 'select', a: null, b: null };
+    TX.pendingShrinkBbox = false;
+    clearContours();
+    const my = txEl('txMyExport');
+    if (my) my.classList.add('hidden');
+    updateTopoReadouts();
+    renderTopoMap();
+  }
+
+  // --- export content: gather the planner's own scene data in the box --------
+  function txFeatureInBbox(geometry) {
+    if (!geometry || !geometry.length) return false;
+    return geometry.some((p) => txPointInBbox(p.lat, p.lon));
+  }
+  function collectExportFeatures() {
+    const out = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: contourSegments.slice(), parcels: [], shadows: false };
+    if (!terrainData) return out;
+    const inBox = (g) => txFeatureInBbox(g);
+    out.buildings = gisSourceData.buildings.filter((f) => inBox(f.geometry));
+    out.roads = gisSourceData.roads.filter((w) => inBox(w.geometry));
+    out.railways = gisSourceData.railways.filter((w) => inBox(w.geometry));
+    out.water = gisSourceData.water.filter((el) => inBox(el.geometry));
+    out.vegetation = gisSourceData.vegetation.filter((el) => inBox(el.geometry));
+    out.shadows = !!TX.layers2d.shadows;
+    return out;
+  }
+  function txClipPolylineToBbox(worldPts) {
+    // worldPts: [{x, z}] -> clipped sub-polylines in world units (or [] when outside)
+    const parts = [];
+    let current = [];
+    for (let i = 0; i < worldPts.length - 1; i++) {
+      const seg = txClipSegmentToBbox(worldPts[i].x, worldPts[i].z, worldPts[i + 1].x, worldPts[i + 1].z);
+      if (!seg) {
+        if (current.length > 1) parts.push(current);
+        current = [];
+        continue;
+      }
+      if (!current.length) current.push({ x: seg.x1, z: seg.z1 });
+      current.push({ x: seg.x2, z: seg.z2 });
+    }
+    if (current.length > 1) parts.push(current);
+    return parts;
+  }
+  function txGeoPolylineMeters(geometry) {
+    // OSM lat/lon ring -> local-metre polylines clipped to the selection box
+    if (!geometry || geometry.length < 2) return [];
+    const world = geometry.map((p) => geoToLocal(p.lat, p.lon));
+    return txClipPolylineToBbox(world).map((part) =>
+      part.map((pt) => {
+        const m = txWorldToLocalMeters(pt.x, pt.z);
+        return { x: m.eastM, y: m.northM, z: txElevationAtWorld(pt.x, pt.z) || 0 };
+      })
+    );
+  }
+  function txExportMeta() {
+    const corners = txBboxCorners();
+    const size = txBboxKm();
+    return {
+      generator: 'Lupus Cortex 3D City Planner (own implementation)',
+      location: terrainData?.center?.name || null,
+      bbox_sw: corners ? [corners.sw.lon, corners.sw.lat] : null,
+      bbox_ne: corners ? [corners.ne.lon, corners.ne.lat] : null,
+      area_km2: size ? Math.round(size.areaKm2 * 100) / 100 : null,
+      width_km: size ? Math.round(size.wKm * 100) / 100 : null,
+      height_km: size ? Math.round(size.hKm * 100) / 100 : null,
+      contour_interval_m: TX.contourIntervalM,
+      dtm_resolution_m: TX.dtmResolutionM,
+      sources: 'Buildings/roads/water/vegetation: OpenStreetMap (Overpass). Elevation: Open-Meteo Elevation API / Terrarium raster DEM.',
+      coordinates: 'DXF/SVG: local metres east/north of the selection SW corner. GeoJSON: WGS84 lon/lat (equirectangular conversion around the area centre, approximate).',
+      note: 'Exports are derived from open data and are NOT survey-grade. Do not use for legal boundaries or construction staking.',
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  // --- DXF (plain-text, AutoCAD-readable) ------------------------------------
+  function dxfLayerTable(layers) {
+    const colors = { BUILDINGS: 7, ROADS: 8, RAILWAYS: 8, WATER: 5, VEGETATION: 3, CONTOURS: 3, TERRAIN: 9, PARCELS: 7 };
+    let s = '  0\nSECTION\n  2\nTABLES\n  0\nTABLE\n  2\nLAYER\n 70\n' + layers.length + '\n';
+    layers.forEach((name) => {
+      s += '  0\nLAYER\n  2\n' + name + '\n 70\n0\n 62\n' + (colors[name] || 7) + '\n  6\nContinuous\n';
+    });
+    return s + '  0\nENDTAB\n  0\nENDSEC\n';
+  }
+  function dxfPolyline(layer, pts, closed) {
+    let s = '  0\nPOLYLINE\n  8\n' + layer + '\n 66\n1\n 70\n' + (closed ? 1 : 0) + '\n';
+    pts.forEach((p) => {
+      s += '  0\nVERTEX\n  8\n' + layer + '\n 10\n' + p.x.toFixed(3) + '\n 20\n' + p.y.toFixed(3) + '\n 30\n' + (p.z || 0).toFixed(3) + '\n';
+    });
+    return s + '  0\nSEQEND\n  8\n' + layer + '\n';
+  }
+  function dxfLine(layer, a, b) {
+    return '  0\nLINE\n  8\n' + layer + '\n 10\n' + a.x.toFixed(3) + '\n 20\n' + a.y.toFixed(3) + '\n 30\n' + (a.z || 0).toFixed(3) +
+      '\n 11\n' + b.x.toFixed(3) + '\n 21\n' + b.y.toFixed(3) + '\n 31\n' + (b.z || 0).toFixed(3) + '\n';
+  }
+  function dxf3DFace(layer, a, b, c) {
+    const f = (p) => ' 10\n' + p.x.toFixed(3) + '\n 20\n' + p.y.toFixed(3) + '\n 30\n' + (p.z || 0).toFixed(3) + '\n';
+    return '  0\n3DFACE\n  8\n' + layer + '\n' + f(a) + ' 11\n' + b.x.toFixed(3) + '\n 21\n' + b.y.toFixed(3) + '\n 31\n' + (b.z || 0).toFixed(3) +
+      '\n 12\n' + c.x.toFixed(3) + '\n 22\n' + c.y.toFixed(3) + '\n 32\n' + (c.z || 0).toFixed(3) +
+      '\n 13\n' + c.x.toFixed(3) + '\n 23\n' + c.y.toFixed(3) + '\n 33\n' + (c.z || 0).toFixed(3) + '\n';
+  }
+  function dxfHeader(meta) {
+    const size = txBboxKm() || { wKm: 0, hKm: 0 };
+    return '  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1009\n  9\n$INSBASE\n 10\n0.0\n 20\n0.0\n 30\n0.0\n  9\n$EXTMIN\n 10\n0.0\n 20\n0.0\n  9\n$EXTMAX\n 10\n' + (size.wKm * 1000).toFixed(3) + '\n 20\n' + (size.hKm * 1000).toFixed(3) +
+      '\n  0\nENDSEC\n  0\nSECTION\n  2\nCOMMENT\n  1\n' + meta.generator + ' | ' + meta.sources + ' | ' + meta.note + '\n  0\nENDSEC\n';
+  }
+  // Pure DXF builder: features are local-metre polylines, contours are
+  // {level, x1,y1,z1,x2,y2,z2} segments. Testable without the scene.
+  function buildDxfText(kind, features, meta) {
+    const layers2d = ['BUILDINGS', 'ROADS', 'RAILWAYS', 'WATER', 'VEGETATION', 'CONTOURS'];
+    const layers3d = ['TERRAIN', 'BUILDINGS', 'ROADS', 'RAILWAYS', 'WATER', 'VEGETATION', 'CONTOURS'];
+    const layers = kind === '3d' ? layers3d : layers2d;
+    let s = dxfHeader(meta) + dxfLayerTable(layers) + '  0\nSECTION\n  2\nENTITIES\n';
+    const addRing = (layer, ring, closed) => { if (ring.length > 1) s += dxfPolyline(layer, ring, closed); };
+    (features.buildings || []).forEach((ring) => addRing('BUILDINGS', ring, true));
+    (features.roads || []).forEach((line) => addRing('ROADS', line, false));
+    (features.railways || []).forEach((line) => addRing('RAILWAYS', line, false));
+    (features.water || []).forEach((ring) => addRing('WATER', ring, true));
+    (features.vegetation || []).forEach((ring) => addRing('VEGETATION', ring, true));
+    (features.contours || []).forEach((c) => {
+      s += dxfLine('CONTOURS', { x: c.x1, y: c.y1, z: c.z1 }, { x: c.x2, y: c.y2, z: c.z2 });
+    });
+    if (kind === '3d') {
+      (features.terrainFaces || []).forEach((f) => { s += dxf3DFace('TERRAIN', f[0], f[1], f[2]); });
+      (features.buildingTops || []).forEach((ring) => addRing('BUILDINGS', ring, true));
+    }
+    return s + '  0\nENDSEC\n  0\nEOF\n';
+  }
+  function txBuildDxf2D(features) {
+    const meta = txExportMeta();
+    const f = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: [] };
+    features.buildings.forEach((b) => txGeoPolylineMeters(b.geometry).forEach((ring) => f.buildings.push(ring.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.roads.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.roads.push(line.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.railways.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.railways.push(line.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.water.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.water.push(ring.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.vegetation.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.vegetation.push(ring.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.contours.forEach((c) => {
+      const a = txWorldToLocalMeters(c.x1, c.z1), b = txWorldToLocalMeters(c.x2, c.z2);
+      f.contours.push({ x1: a.eastM, y1: a.northM, z1: c.level, x2: b.eastM, y2: b.northM, z2: c.level });
+    });
+    return { text: buildDxfText('2d', f, meta), counts: txCountFeatures(f) };
+  }
+  function txBuildDxf3D(features) {
+    const meta = txExportMeta();
+    const f = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: [], terrainFaces: [], buildingTops: [] };
+    // Terrain mesh as 3DFACE, decimated to about the chosen DTM resolution.
+    if (terrainData && terrainData.grid) {
+      const res = terrainData.resolution;
+      const cellM = (terrainData.areaKm * 1000) / Math.max(1, res - 1);
+      const step = Math.max(1, Math.round(TX.dtmResolutionM / Math.max(1, cellM)));
+      for (let r = 0; r < res - 1; r += step) {
+        for (let c = 0; c < res - 1; c += step) {
+          const r2 = Math.min(res - 1, r + step), c2 = Math.min(res - 1, c + step);
+          const P = (rr, cc) => {
+            const w = { x: (cc / (res - 1) - 0.5) * PLANE_SIZE, z: (rr / (res - 1) - 0.5) * PLANE_SIZE };
+            const m = txWorldToLocalMeters(w.x, w.z);
+            return { x: m.eastM, y: m.northM, z: terrainData.grid[rr][cc] };
+          };
+          const a = P(r, c), b = P(r, c2), d = P(r2, c), e = P(r2, c2);
+          f.terrainFaces.push([a, d, b]);
+          f.terrainFaces.push([b, d, e]);
+        }
+      }
+    }
+    features.buildings.forEach((b) => {
+      txGeoPolylineMeters(b.geometry).forEach((ring) => {
+        const base = ring.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+        const top = ring.map((p) => ({ x: p.x, y: p.y, z: b.height_m || TX_DEFAULT_BUILDING_HEIGHT_M }));
+        f.buildings.push(base);
+        f.buildingTops.push(top);
+      });
+    });
+    features.roads.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.roads.push(line)));
+    features.railways.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.railways.push(line)));
+    features.water.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.water.push(ring.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.vegetation.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.vegetation.push(ring.map((p) => ({ x: p.x, y: p.y, z: 0 })))));
+    features.contours.forEach((c) => {
+      const a = txWorldToLocalMeters(c.x1, c.z1), b = txWorldToLocalMeters(c.x2, c.z2);
+      f.contours.push({ x1: a.eastM, y1: a.northM, z1: c.level, x2: b.eastM, y2: b.northM, z2: c.level });
+    });
+    return { text: buildDxfText('3d', f, meta), counts: txCountFeatures(f) };
+  }
+  function txCountFeatures(f) {
+    return {
+      buildings: (f.buildings || []).length, roads: (f.roads || []).length, railways: (f.railways || []).length,
+      water: (f.water || []).length, vegetation: (f.vegetation || []).length,
+      contours: (f.contours || []).length, terrainFaces: (f.terrainFaces || []).length,
+    };
+  }
+
+  // --- SVG (colour-coded 2D plan, like the 2D preview) ------------------------
+  function buildSvgText(features, meta) {
+    const size = txBboxKm() || { wKm: 0, hKm: 0 };
+    const W = Math.max(1, Math.round(size.wKm * 1000)), H = Math.max(1, Math.round(size.hKm * 1000));
+    const Y = (y) => H - y;
+    let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">\n` +
+      `<!-- ${meta.generator} | ${meta.sources} | ${meta.note} -->\n` +
+      `<title>${meta.location ? meta.location.replace(/&/g, '&amp;') : 'Site plan'} — ${meta.area_km2} km²</title>\n` +
+      `<rect x="0" y="0" width="${W}" height="${H}" fill="#eef2ee"/>\n`;
+    const path = (ring, close) => 'M' + ring.map((p) => `${p.x.toFixed(1)} ${Y(p.y).toFixed(1)}`).join(' L') + (close ? ' Z' : '');
+    (features.vegetation || []).forEach((ring) => { s += `<path d="${path(ring, true)}" fill="#7ed491" stroke="#2e7d32" stroke-width="1"/>\n`; });
+    (features.water || []).forEach((ring) => { s += `<path d="${path(ring, true)}" fill="#7cc4ea" stroke="#1d7fb8" stroke-width="1"/>\n`; });
+    (features.roads || []).forEach((line) => { s += `<path d="${path(line, false)}" fill="none" stroke="#2b2f36" stroke-width="2"/>\n`; });
+    (features.railways || []).forEach((line) => { s += `<path d="${path(line, false)}" fill="none" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 4"/>\n`; });
+    (features.buildings || []).forEach((ring) => { s += `<path d="${path(ring, true)}" fill="#f5f5f5" stroke="#333333" stroke-width="1.2"/>\n`; });
+    (features.contours || []).forEach((c) => {
+      s += `<line x1="${c.x1.toFixed(1)}" y1="${Y(c.y1).toFixed(1)}" x2="${c.x2.toFixed(1)}" y2="${Y(c.y2).toFixed(1)}" stroke="#2e7d32" stroke-width="0.7" data-elev="${c.z1}"/>\n`;
+    });
+    return s + '</svg>\n';
+  }
+  function txBuildSvg(features) {
+    const meta = txExportMeta();
+    const f = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: [] };
+    features.buildings.forEach((b) => txGeoPolylineMeters(b.geometry).forEach((ring) => f.buildings.push(ring)));
+    features.roads.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.roads.push(line)));
+    features.railways.forEach((w) => txGeoPolylineMeters(w.geometry).forEach((line) => f.railways.push(line)));
+    features.water.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.water.push(ring)));
+    features.vegetation.forEach((el) => txGeoPolylineMeters(el.geometry).forEach((ring) => f.vegetation.push(ring)));
+    features.contours.forEach((c) => {
+      const a = txWorldToLocalMeters(c.x1, c.z1), b = txWorldToLocalMeters(c.x2, c.z2);
+      f.contours.push({ x1: a.eastM, y1: a.northM, z1: c.level, x2: b.eastM, y2: b.northM, z2: c.level });
+    });
+    return { text: buildSvgText(f, meta), counts: txCountFeatures(f) };
+  }
+
+  // --- GeoJSON (WGS84) --------------------------------------------------------
+  function txLonLatRing(geometry) {
+    if (!geometry || geometry.length < 2) return null;
+    const ring = geometry.map((p) => { const g = txLocalToGeo(geoToLocal(p.lat, p.lon).x, geoToLocal(p.lat, p.lon).z); return [Math.round(g.lon * 1e6) / 1e6, Math.round(g.lat * 1e6) / 1e6]; });
+    if (ring.length > 2 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) ring.push(ring[0]);
+    return ring;
+  }
+  function txBuildGeoJson(features) {
+    const meta = txExportMeta();
+    const out = { type: 'FeatureCollection', bbox: meta.bbox_sw && meta.bbox_ne ? [meta.bbox_sw[0], meta.bbox_sw[1], meta.bbox_ne[0], meta.bbox_ne[1]] : undefined, features: [], properties: meta };
+    const add = (type, coords, props) => out.features.push({ type: 'Feature', geometry: { type, coordinates: coords }, properties: props });
+    features.buildings.forEach((b) => {
+      const ring = txLonLatRing(b.geometry);
+      if (ring) add('Polygon', [ring], { layer: 'buildings', source: 'OpenStreetMap', id: b.id, height_m: b.height_m, height_source: b.height_source });
+    });
+    features.roads.forEach((w) => {
+      const line = (w.geometry || []).map((p) => { const g = txLocalToGeo(geoToLocal(p.lat, p.lon).x, geoToLocal(p.lat, p.lon).z); return [Math.round(g.lon * 1e6) / 1e6, Math.round(g.lat * 1e6) / 1e6]; });
+      if (line.length > 1) add('LineString', line, { layer: 'roads', source: 'OpenStreetMap', id: `osm-way-${w.id}`, highway: w.tags?.highway || null });
+    });
+    features.railways.forEach((w) => {
+      const line = (w.geometry || []).map((p) => { const g = txLocalToGeo(geoToLocal(p.lat, p.lon).x, geoToLocal(p.lat, p.lon).z); return [Math.round(g.lon * 1e6) / 1e6, Math.round(g.lat * 1e6) / 1e6]; });
+      if (line.length > 1) add('LineString', line, { layer: 'railways', source: 'OpenStreetMap', id: `osm-way-${w.id}`, railway: w.tags?.railway || null });
+    });
+    features.water.forEach((el) => {
+      const ring = txLonLatRing(el.geometry);
+      if (ring) add('Polygon', [ring], { layer: 'waterways', source: 'OpenStreetMap', id: `osm-way-${el.id}` });
+    });
+    features.vegetation.forEach((el) => {
+      const ring = txLonLatRing(el.geometry);
+      if (ring) add('Polygon', [ring], { layer: 'trees_and_green_spaces', source: 'OpenStreetMap', id: `osm-way-${el.id}` });
+    });
+    features.contours.forEach((c) => {
+      const a = txLocalToGeo(c.x1, c.z1), b = txLocalToGeo(c.x2, c.z2);
+      add('LineString', [[Math.round(a.lon * 1e6) / 1e6, Math.round(a.lat * 1e6) / 1e6], [Math.round(b.lon * 1e6) / 1e6, Math.round(b.lat * 1e6) / 1e6]], { layer: 'contour_lines', source: 'planner DEM', elevation_m: c.level, interval_m: TX.contourIntervalM });
+    });
+    return { text: JSON.stringify(out, null, 2), counts: { features: out.features.length } };
+  }
+  function txBuildTxtSummary(features, fileList) {
+    const meta = txExportMeta();
+    const lines = [
+      'Lupus Cortex 3D City Planner — export summary',
+      `Location: ${meta.location || 'unknown'}`,
+      `Area: ${meta.area_km2} km² (${meta.width_km} km × ${meta.height_km} km)`,
+      `Bounding box SW: ${meta.bbox_sw ? meta.bbox_sw[1].toFixed(5) + ', ' + meta.bbox_sw[0].toFixed(5) : 'n/a'} | NE: ${meta.bbox_ne ? meta.bbox_ne[1].toFixed(5) + ', ' + meta.bbox_ne[0].toFixed(5) : 'n/a'}`,
+      `Contour interval: ${meta.contour_interval_m} m | DTM resolution: ${meta.dtm_resolution_m} m`,
+      `Buildings: ${features.buildings.length} | Roads: ${features.roads.length} | Railways: ${features.railways.length} | Water: ${features.water.length} | Green: ${features.vegetation.length} | Contour segments: ${features.contours.length}`,
+      `Files in this export: ${fileList.map((f) => f.name).join(', ')}`,
+      `Sources: ${meta.sources}`,
+      `Coordinates: ${meta.coordinates}`,
+      meta.note,
+      `Generated: ${meta.generated_at}`,
+    ];
+    return { text: lines.join('\n') + '\n', counts: {} };
+  }
+
+  // --- 3D model blobs (reuse the existing export group; collect, don't save) --
+  function txBuildStlBlob() {
+    if (!terrainMesh || !THREE.STLExporter) return null;
+    const group = buildExportGroup(false);
+    const result = new THREE.STLExporter().parse(group, { binary: true });
+    return new Blob([result.buffer || result], { type: 'application/octet-stream' });
+  }
+  function txBuildObjBlobs() {
+    if (!terrainMesh || !THREE.OBJExporter) return null;
+    const group = buildExportGroup(true);
+    const base = modelBaseName();
+    let obj = new THREE.OBJExporter().parse(group);
+    const out = [];
+    const hasTex = surfaceMode === 'satellite' && satelliteTexture;
+    if (hasTex) {
+      obj = `mtllib ${base}.mtl\n` + obj;
+      const mtl = `newmtl terrain_surface\nKa 1 1 1\nKd 1 1 1\nd 1\nillum 1\nmap_Kd ${base}.png\n`;
+      out.push({ name: `${base}.mtl`, blob: new Blob([mtl], { type: 'text/plain' }) });
+      const img = satelliteTexture.image;
+      if (img && img.toBlob) {
+        return new Promise((resolve) => {
+          img.toBlob((b) => { if (b) out.push({ name: `${base}.png`, blob: b }); out.push({ name: `${base}.obj`, blob: new Blob([obj], { type: 'text/plain' }) }); resolve(out); }, 'image/png');
+        });
+      }
+      if (img && img.toDataURL) out.push({ name: `${base}.png`, blob: dataURLToBlob(img.toDataURL('image/png')) });
+    }
+    out.push({ name: `${base}.obj`, blob: new Blob([obj], { type: 'text/plain' }) });
+    return out;
+  }
+  function txBuildGlbBlob() {
+    if (!terrainMesh || !THREE.GLTFExporter) return Promise.resolve(null);
+    const group = buildExportGroup(true);
+    return new Promise((resolve) => {
+      new THREE.GLTFExporter().parse(group, (result) => {
+        resolve(new Blob([result], { type: 'model/gltf-binary' }));
+      }, { binary: true });
+    });
+  }
+  function txBuildSatelliteJpeg() {
+    if (!satelliteTexture || !satelliteTexture.image) return Promise.resolve(null);
+    const img = satelliteTexture.image;
+    const cv = document.createElement('canvas');
+    cv.width = img.naturalWidth || img.width;
+    cv.height = img.naturalHeight || img.height;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return Promise.resolve(null);
+    ctx.drawImage(img, 0, 0);
+    return new Promise((resolve) => cv.toBlob((b) => resolve(b), 'image/jpeg', 0.92));
+  }
+
+  // --- Export Now: async job with progress + "My export" file list -----------
+  function txSetExportProgress(text) {
+    const el = txEl('txExportProgress');
+    if (el) el.textContent = text;
+  }
+  function txRenderMyExport(files, notes) {
+    const view = txEl('txMyExport');
+    const list = txEl('txExportFiles');
+    const noteEl = txEl('txExportNotes');
+    if (!view || !list) return;
+    view.classList.remove('hidden');
+    list.innerHTML = '';
+    files.forEach((f) => {
+      const url = URL.createObjectURL(f.blob);
+      const row = document.createElement('div');
+      row.className = 'tx-file-row';
+      const kb = f.blob.size >= 1024 ? `${(f.blob.size / 1024).toFixed(1)} KB` : `${f.blob.size} B`;
+      row.innerHTML = `<a class="tx-file-link" href="${url}" download="${f.name}"></a><span class="tx-file-size">${kb}</span>`;
+      row.querySelector('.tx-file-link').textContent = f.name;
+      list.appendChild(row);
+    });
+    if (noteEl) noteEl.textContent = notes.join(' ');
+    txSetExportProgress(files.length ? `Export ready — ${files.length} file${files.length > 1 ? 's' : ''}.` : 'Export finished with no files.');
+  }
+  async function runLxExport() {
+    if (!terrainData || !terrainMesh) { setStatus('Generate a terrain first.', 'error'); return; }
+    const size = txBboxKm();
+    if (size && size.areaKm2 > TX_MAX_AREA_KM2) {
+      setStatus(`Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`, 'error');
+      txGateNote(`Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`);
+      return;
+    }
+    const view = txEl('txMyExport');
+    if (view) view.classList.remove('hidden');
+    txSetExportProgress('Preparing layers…');
+    await new Promise((r) => setTimeout(r, 30));
+    const features = collectExportFeatures();
+    const files = [];
+    const notes = [];
+    const meta = txExportMeta();
+    const base = modelBaseName();
+    // Satellite Image
+    if (TX.master.satellite) {
+      txSetExportProgress('Building satellite image (JPEG)…');
+      const jpg = await txBuildSatelliteJpeg();
+      if (jpg) files.push({ name: 'lupus_satellite.jpg', blob: jpg });
+      else notes.push('Satellite JPEG was skipped: no satellite imagery is loaded for this area.');
+    }
+    // 2D Vectorial Map
+    if (TX.master.d2) {
+      const fmt = TX.format.d2;
+      if (!txFormatProducible('d2', fmt)) {
+        notes.push(`2D ${fmt} is not available in this browser build — DXF and SVG are. Select DXF or SVG to include the 2D vectorial map.`);
+      } else if (fmt === 'DXF') {
+        txSetExportProgress('Building 2D vectorial map (DXF)…');
+        const out = txBuildDxf2D(features);
+        files.push({ name: 'lupus_vectorial.dxf', blob: new Blob([out.text], { type: 'text/plain' }) });
+      } else if (fmt === 'SVG') {
+        txSetExportProgress('Building 2D vectorial map (SVG)…');
+        const out = txBuildSvg(features);
+        files.push({ name: 'lupus_vectorial.svg', blob: new Blob([out.text], { type: 'image/svg+xml' }) });
+      }
+    }
+    // 3D Modeling
+    if (TX.master.d3) {
+      const fmt = TX.format.d3;
+      if (!txFormatProducible('d3', fmt)) {
+        notes.push(`3D ${fmt} is not available in this browser build — DXF, OBJ, glTF and STL are. Select one of those to include the 3D model.`);
+      } else if (fmt === 'DXF') {
+        txSetExportProgress('Building 3D model (DXF)…');
+        const out = txBuildDxf3D(features);
+        files.push({ name: 'lupus_3d.dxf', blob: new Blob([out.text], { type: 'text/plain' }) });
+      } else if (fmt === 'OBJ') {
+        txSetExportProgress('Building 3D model (OBJ)…');
+        const parts = await txBuildObjBlobs();
+        (parts || []).forEach((p) => files.push({ name: p.name, blob: p.blob }));
+      } else if (fmt === 'glTF') {
+        txSetExportProgress('Building 3D model (glTF)…');
+        const glb = await txBuildGlbBlob();
+        if (glb) files.push({ name: `${base}.glb`, blob: glb });
+      } else if (fmt === 'STL') {
+        txSetExportProgress('Building 3D model (STL)…');
+        const stl = txBuildStlBlob();
+        if (stl) files.push({ name: `${base}.stl`, blob: stl });
+      }
+    }
+    // Raw Formats
+    if (TX.master.raw) {
+      const fmt = TX.format.raw;
+      if (!txFormatProducible('raw', fmt)) {
+        notes.push(`Raw ${fmt} is not available in this browser build — GeoJSON and TXT are.`);
+      } else if (fmt === 'GeoJSON') {
+        txSetExportProgress('Building raw data (GeoJSON)…');
+        const out = txBuildGeoJson(features);
+        files.push({ name: 'lupus_raw.geojson', blob: new Blob([out.text], { type: 'application/geo+json' }) });
+      } else if (fmt === 'TXT') {
+        txSetExportProgress('Building raw data (TXT)…');
+        const out = txBuildTxtSummary(features, files);
+        files.push({ name: 'lupus_raw.txt', blob: new Blob([out.text], { type: 'text/plain' }) });
+      }
+    }
+    notes.push(`Coordinates: ${meta.coordinates} ${meta.note}`);
+    if (!gisSourceData.buildings.length && !gisSourceData.roads.length) {
+      notes.push('Note: no OpenStreetMap features were returned for this area, so vector layers are empty.');
+    }
+    txRenderMyExport(files, notes);
+    setStatus(files.length ? `✅ Export ready — ${files.length} file${files.length > 1 ? 's' : ''} listed under My export.` : 'Export finished with no files (see notes).', files.length ? 'ok' : 'warn');
+  }
+
+  // --- REAL scenario features: baseline vs scenario deltas -------------------
+  // The old buildExportData() sent buildTwinFeatures() for BOTH baseline and
+  // scenario (identical features, delta 0) — see the 2026-11-05 finding. The
+  // scenario features are now computed from the same baseline record with the
+  // recorded scenario edits applied; the delta is baseline -> scenario.
+  //
+  // buildTwinFeatures() returns AGGREGATES (not arrays):
+  //   terrain {mean/min/max_elevation_m, elevation_range_m, mean/max_slope_pct, ...}
+  //   buildings {source_count, rendered_count, building_density_per_km2,
+  //     building_footprint_area_m2, builtup_pct, mean/max_height_m, *_coverage_pct}
+  //   roads {road_length_km, road_density_km_per_km2}
+  //   vegetation {green_space_area_m2, green_space_pct}
+  //   water {surface_water_area_m2, surface_water_pct}
+  //   surface {impervious_pct}
+  // This function edits those aggregates from digitalTwinState.scenario, using
+  // the same definitions as buildTwinFeatures() (mean/max height exclude
+  // visualization_default heights; coverage is over the remaining buildings).
+  function applyScenarioEditsToFeatures(feat, editedTerrain) {
+    if (!feat) return null;
+    const f = JSON.parse(JSON.stringify(feat));
+    const sc = digitalTwinState.scenario;
+    const areaKm2 = terrainData ? terrainData.areaKm * terrainData.areaKm : null;
+    const areaM2 = areaKm2 ? areaKm2 * 1000000 : null;
+    // --- buildings: removals / height modifications / additions ---
+    const removedIds = new Set(sc.removedBuildingIds || []);
+    const removed = gisSourceData.buildings.filter((b) => removedIds.has(b.id));
+    const removedFootprint = removed.reduce((s, b) => s + (Number(b.footprint_area_m2) || 0), 0);
+    const renderedIds = new Set((gisRenderData.buildings || []).map((b) => b.id));
+    const removedRendered = removed.filter((b) => renderedIds.has(b.id)).length;
+    // Heights of the buildings that remain, after height-scale modifications.
+    // Keep the source tag so mean/max can exclude visualization_default, exactly
+    // as buildTwinFeatures() does for the baseline.
+    const heightEntries = [];
+    gisSourceData.buildings.forEach((b) => {
+      if (removedIds.has(b.id)) return;
+      let h = b.height_m;
+      const mod = (sc.modifiedBuildings || []).find((m) => m.id === b.id);
+      if (mod && mod.height_scale) h = (h || TX_DEFAULT_BUILDING_HEIGHT_M) * mod.height_scale;
+      heightEntries.push({ h, src: b.height_source });
+    });
+    let addedFootprint = 0;
+    (sc.addedBuildings || []).forEach((ab) => {
+      const h = ab.heightMeters || TX_DEFAULT_BUILDING_HEIGHT_M;
+      heightEntries.push({ h, src: 'scenario' });
+      if (ab.mesh) {
+        const bbox = new THREE.Box3().setFromObject(ab.mesh);
+        const mPerUnit = terrainData ? (terrainData.areaKm * 1000) / PLANE_SIZE : 1;
+        addedFootprint += Math.max(0, (bbox.max.x - bbox.min.x) * (bbox.max.z - bbox.min.z)) * mPerUnit * mPerUnit;
+      }
+    });
+    const heights = heightEntries.filter((e) => e.src !== 'visualization_default').map((e) => e.h);
+    const B = f.buildings || {};
+    B.source_count = Math.max(0, (B.source_count || 0) - removed.length + (sc.addedBuildings || []).length);
+    B.rendered_count = Math.max(0, (B.rendered_count || 0) - removedRendered + (sc.addedBuildings || []).length);
+    B.building_footprint_area_m2 = Math.max(0, (B.building_footprint_area_m2 || 0) - removedFootprint + addedFootprint);
+    if (areaKm2) B.building_density_per_km2 = B.source_count / areaKm2;
+    if (areaM2) B.builtup_pct = (B.building_footprint_area_m2 / areaM2) * 100;
+    B.mean_height_m = heights.length ? heights.reduce((s, v) => s + v, 0) / heights.length : null;
+    B.max_height_m = heights.length ? Math.max(...heights) : null;
+    const remaining = gisSourceData.buildings.filter((b) => !removedIds.has(b.id));
+    const cov = (src) => remaining.length ? (remaining.filter((b) => b.height_source === src).length / remaining.length) * 100 : null;
+    B.observed_height_coverage_pct = cov('osm_height');
+    B.derived_height_coverage_pct = cov('osm_levels_derived');
+    B.default_height_coverage_pct = cov('visualization_default');
+    // --- roads: added roads from their recorded points ---
+    let addedRoadKm = 0;
+    (sc.addedRoads || []).forEach((road) => {
+      const pts = road.points || [];
+      for (let i = 1; i < pts.length; i++) {
+        addedRoadKm += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z) / metersToUnits() / 1000;
+      }
+    });
+    const R = f.roads || {};
+    R.road_length_km = (R.road_length_km || 0) + addedRoadKm;
+    if (areaKm2) R.road_density_km_per_km2 = R.road_length_km / areaKm2;
+    // --- vegetation / water removals (by OSM way id) ---
+    const removedVegArea = (sc.vegetationChanges || []).filter((c) => c.action === 'remove').reduce((s, c) => {
+      const el = gisSourceData.vegetation.find((v) => `osm-way-${v.id}` === c.id || v.id === c.id);
+      return s + (el ? polygonAreaM2(el.geometry) || 0 : 0);
+    }, 0);
+    const removedWaterArea = (sc.waterChanges || []).filter((c) => c.action === 'remove').reduce((s, c) => {
+      const el = gisSourceData.water.find((v) => `osm-way-${v.id}` === c.id || v.id === c.id);
+      return s + (el ? polygonAreaM2(el.geometry) || 0 : 0);
+    }, 0);
+    // --- zone-painted cells: zoneGrid is the authoritative record ---
+    let parkCells = 0, waterCells = 0;
+    if (zoneGrid && terrainData) {
+      zoneGrid.forEach((z) => { if (z === 'park') parkCells++; if (z === 'water') waterCells++; });
+    }
+    const cellM = terrainData ? (terrainData.areaKm * 1000) / Math.max(1, terrainData.resolution - 1) : 0;
+    const cellAreaM2 = cellM * cellM;
+    const V = f.vegetation || {};
+    V.green_space_area_m2 = Math.max(0, (V.green_space_area_m2 || 0) - removedVegArea + parkCells * cellAreaM2);
+    if (areaM2) V.green_space_pct = (V.green_space_area_m2 / areaM2) * 100;
+    const W = f.water || {};
+    W.surface_water_area_m2 = Math.max(0, (W.surface_water_area_m2 || 0) - removedWaterArea + waterCells * cellAreaM2);
+    if (areaM2) W.surface_water_pct = (W.surface_water_area_m2 / areaM2) * 100;
+    // --- terrain: the edited-grid stats replace the observed DEM stats ---
+    if (editedTerrain) {
+      const T = f.terrain || {};
+      T.mean_elevation_m = editedTerrain.mean;
+      T.min_elevation_m = editedTerrain.min;
+      T.max_elevation_m = editedTerrain.max;
+      T.elevation_range_m = editedTerrain.relief;
+      if (Number.isFinite(editedTerrain.mean_slope_pct)) T.mean_slope_pct = editedTerrain.mean_slope_pct;
+      if (Number.isFinite(editedTerrain.max_slope_pct)) T.max_slope_pct = editedTerrain.max_slope_pct;
+    }
+    return f;
+  }
+  function buildScenarioFeatures(baseline, editedTerrain) {
+    // Deep-copy the baseline and apply every recorded scenario edit, so the
+    // scenario record reflects what the user actually changed in the planner.
+    // editedTerrain is optional: {min, max, mean, relief, mean_slope_pct,
+    // max_slope_pct} from the edited elevation grid (buildExportData passes it).
+    const copy = JSON.parse(JSON.stringify(baseline));
+    const edited = applyScenarioEditsToFeatures(copy, editedTerrain);
+    return edited || copy;
+  }
+
+  // --- hooks: called from the existing buildCityFromSatellite / importGISData /
+  // --- reset / setExaggeration / bindControls (the actual hook call sites are
+  // --- patched into the base file; these functions are the handlers) ----------
+  function txOnCityBuilt() {
+    bindLxExportControls();
+    refreshLxExport();
+  }
+  function txOnReset() {
+    resetLxExport();
+  }
+  function txOnExaggerationChanged() {
+    rebuildContours();
+    renderTopoMap();
+  }
+
+  // --- test hook (used by the node smoke test via window.__lxExport) --------
+  window.__lxExport = {
+    state: TX,
+    TX_MAX_AREA_KM2,
+    TX_FREE_CONTOUR_INTERVALS,
+    TX_PRO_CONTOUR_INTERVALS,
+    TX_FREE_DTM_RESOLUTIONS,
+    txBboxKm,
+    txBboxCorners,
+    txClampBbox,
+    txSelectFormat,
+    txFormatProducible,
+    txSetMaster,
+    txLayerChanged,
+    txApplyInterval,
+    txSyncIntervalButtons,
+    txElevColor,
+    txElevationAtWorld,
+    txWorldToLocalMeters,
+    txLocalToGeo,
+    txUVToWorld,
+    txWorldToUV,
+    txPointInBbox,
+    txClipSegmentToBbox,
+    computeContourSegments,
+    buildContours,
+    rebuildContours,
+    clearContours,
+    applyTopoLayerVisibility,
+    setSectionMode,
+    generateSectionProfile,
+    collectExportFeatures,
+    buildDxfText,
+    buildSvgText,
+    txBuildDxf2D,
+    txBuildDxf3D,
+    txBuildSvg,
+    txBuildGeoJson,
+    txBuildTxtSummary,
+    txCountFeatures,
+    buildScenarioFeatures,
+    applyScenarioEditsToFeatures,
+    bindLxExportControls,
+    buildTwinFeatures,
+    buildTwinFeatureDelta,
+    buildExportData,
+    updateTopoReadouts,
+    renderTopoMap,
+    refreshLxExport,
+    resetLxExport,
+    runLxExport,
+  };
+  // Make contourSegments readable from the test hook.
+  Object.defineProperty(window.__lxExport, 'contourSegments', { get: () => contourSegments });
+  // --- test seam (smoke test only): inject planner state the TX code reads ---
+  // Production code never calls this; it exists so the node smoke test can set
+  // terrainData / GIS data / scenario edits / scene groups without a browser.
+  window.__lxExport._test = {
+    setTerrain(td) { terrainData = td; },
+    setTerrainMesh(tm) { terrainMesh = tm; },
+    setScene(s) { scene = s; },
+    setGis(g) { Object.assign(gisSourceData, g); },
+    setRenderGis(g) { Object.assign(gisRenderData, g); },
+    setGroups(g) {
+      if ('gisGroup' in g) gisGroup = g.gisGroup;
+      if ('cityGroup' in g) cityGroup = g.cityGroup;
+      if ('contourGroup' in g) contourGroup = g.contourGroup;
+    },
+    setZoneGrid(zg) { zoneGrid = zg; },
+    setScenario(s) { Object.assign(digitalTwinState.scenario, s); },
+    clearScenario() { resetScenarioState(); },
+    getScenario() { return digitalTwinState.scenario; },
+    setContourSegments(segs) { contourSegments = segs; },
+  };
+
+  // --- railway rendering (mirrors buildRoadsMesh; grey dashed-look tube) -------
+  function buildRailwaysMesh(ways) {
+    const m2u = metersToUnits();
+    const half = PLANE_SIZE / 2;
+    const geos = [];
+    let totalMeters = 0;
+    for (const el of ways) {
+      const g = el.geometry;
+      if (!g || g.length < 2) continue;
+      const pts = [];
+      for (let i = 0; i < g.length; i++) {
+        const l = geoToLocal(g[i].lat, g[i].lon);
+        if (l.x < -half || l.x > half || l.z < -half || l.z > half) continue;
+        pts.push(new THREE.Vector3(l.x, terrainSurfaceY(l.x, l.z) + 0.35, l.z));
+      }
+      if (pts.length < 2) continue;
+      for (let i = 1; i < pts.length; i++) totalMeters += pts[i].distanceTo(pts[i - 1]) / m2u;
+      let geo;
+      try {
+        const curve = new THREE.CatmullRomCurve3(pts);
+        geo = new THREE.TubeGeometry(curve, Math.max(4, pts.length * 3), 0.22, 5, false);
+      } catch (e) { continue; }
+      geos.push(geo);
+    }
+    if (!geos.length) return 0;
+    const merged = mergeGeos(geos);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.9, metalness: 0.0 });
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.receiveShadow = true;
+    mesh.name = 'gisRailways';
+    gisGroup.add(mesh);
+    return totalMeters;
   }
 
   return { open, close };
