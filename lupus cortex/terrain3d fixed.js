@@ -2344,6 +2344,39 @@ out geom;`;
     return geo;
   }
 
+  // Export-safe clone: THREE.Object3D.clone() deep-copies userData via
+  // JSON.parse(JSON.stringify(...)), and our GIS meshes carry
+  // userData.record.mesh — a back-reference to the mesh itself. Stringify
+  // then recurses through Mesh.toJSON forever and throws
+  // "RangeError: Maximum call stack size exceeded", which killed every
+  // GLB/OBJ/STL export (2026-11-07). This clone copies geometry/material
+  // (by reference) and transforms by hand and never touches userData.
+  function cloneForExport(obj) {
+    let out;
+    if (obj.isMesh) {
+      out = new THREE.Mesh(obj.geometry, obj.material);
+    } else if (obj.isLineSegments || obj.isLine) {
+      out = new THREE.LineSegments(obj.geometry, obj.material);
+    } else {
+      out = new THREE.Group();
+    }
+    out.name = obj.name;
+    out.position.copy(obj.position);
+    out.quaternion.copy(obj.quaternion);
+    out.scale.copy(obj.scale);
+    out.matrix.copy(obj.matrix);
+    out.matrixWorld.copy(obj.matrixWorld);
+    out.matrixAutoUpdate = obj.matrixAutoUpdate;
+    out.matrixWorldNeedsUpdate = obj.matrixWorldNeedsUpdate;
+    out.visible = obj.visible;
+    if (obj.isMesh) {
+      out.castShadow = obj.castShadow;
+      out.receiveShadow = obj.receiveShadow;
+    }
+    obj.children.forEach((ch) => out.add(cloneForExport(ch)));
+    return out;
+  }
+
   // Assemble an export group: solid terrain (textured) + buildings/roads clones
   function buildExportGroup(includeTexture) {
     const group = new THREE.Group();
@@ -2363,8 +2396,9 @@ out geom;`;
 
     // Include placed structures, generated city and roads as part of the model
     [structureGroup, cityGroup, roadGroup, gisGroup].forEach((src) => {
-      if (src && src.children.length) group.add(src.clone(true));
+      if (src && src.children.length) group.add(cloneForExport(src));
     });
+    group.updateMatrixWorld(true);
     return group;
   }
 
