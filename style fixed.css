@@ -4071,6 +4071,14 @@ main, header, footer { position: relative; z-index: 1; }
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
   padding: 24px;
 }
+/* Phone: give the modal content more room — tighter overlay + panel padding. */
+@media (max-width: 600px) {
+  .terrain-modal, .index-modal { padding: 12px; }
+  .terrain-panel { padding: 16px; border-radius: 16px; }
+  .index-modal-panel { padding: 20px 16px 24px; border-radius: 20px; }
+  .terrain-generate-bar { padding: 12px; }
+  .terrain-head h2 { font-size: 19px; }
+}
 .terrain-head {
   display: flex;
   align-items: flex-start;
@@ -4210,6 +4218,12 @@ main, header, footer { position: relative; z-index: 1; }
 @media (max-width: 700px) {
   .terrain-twin-preview { right: 10px; bottom: 10px; width: 170px; }
   .terrain-twin-preview canvas { height: 106px; }
+}
+@media (max-width: 480px) {
+  /* Phone: the satellite preview must not cover most of the 3D view. */
+  .terrain-twin-preview { right: 8px; bottom: 8px; width: 128px; }
+  .terrain-twin-preview canvas { height: 80px; }
+  .terrain-twin-preview p { display: none; }
 }
 .terrain-placeholder {
   position: absolute;
