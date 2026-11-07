@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LUPUS CORTEX - Urban Intelligence Solutions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Advanced urban intelligence platform for monitoring city health, sustainability, and environmental quality using satellite data and AI insights." />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" />
+  <link rel="stylesheet" href="style fixed.css" />
+  <link rel="stylesheet" href="data-extractor.css" />
+  <link rel="stylesheet" href="topoexport.css" />
+  <!-- External Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- Three.js 3D model exporters (STL / OBJ / glTF) — turn terrain into 3D models -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+  <!-- GPU-friendly geometry merging for GIS feature extrusion -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <!-- Navigation Header -->
+  <header class="top-bar">
+    <a class="logo" href="#" aria-label="Lupus Cortex — Home" data-section="welcome">
+      <img src="assets/logo.svg" alt="Lupus Cortex" />
+    </a>
+    <nav class="nav">
+      <button class="nav-btn" data-section="welcome">Home</button>
+      <button class="nav-btn" data-section="dashboard">Dashboard</button>
+      <button class="nav-btn" data-section="map">Map</button>
+      <button class="nav-btn" data-section="3d">3D View</button>
+      <button class="nav-btn" data-section="usecases">Use Cases</button>
+      <button class="nav-btn" data-section="chatbot">AI Chat</button>
+    </nav>
+    <button class="notif-btn">Notifications</button>
+  </header>
+  <section class="analysis-status-bar" id="analysisStatusBar" aria-live="polite">
+    <div><span class="analysis-status-dot"></span><b id="analysisStatusMode">AWAITING MODEL REPORT</b></div>
+    <div id="analysisStatusLocation">Select a location to begin evidence-based analysis.</div>
+    <div id="analysisStatusMeta">Coverage, provenance and confidence are unavailable until the model responds.</div>
+    <button class="btn secondary small" id="refreshAnalysisBtn" type="button">Refresh</button>
+  </section>
+
+  <main id="main-content">
+    <!-- WELCOME SECTION -->
+    <section id="welcome-section" class="section active">
+      <div class="hero">
+        <div class="hero-content">
+          <p class="subtitle">Advanced Urban Intelligence</p>
+          <h1>Monitor Your City's<br />Health &amp; Sustainability</h1>
+          <p class="hero-text">
+            Comprehensive real-time analysis of urban environmental quality,
+            social well-being, and disaster preparedness using satellite data
+            and AI insights.
+          </p>
+          <div class="hero-actions">
+            <button class="btn primary" id="startAnalysisBtn">Start Analysis</button>
+            <button class="btn secondary">Learn More</button>
+          </div>
+          <div class="hero-stats">
+            <div class="stat">
+              <div class="stat-number">9</div>
+              <div class="stat-label">Domain Indices + HWI</div>
+            </div>
+            <div class="stat">
+              <div class="stat-number">Latest</div>
+              <div class="stat-label">Available Evidence</div>
+            </div>
+            <div class="stat">
+              <div class="stat-number">AI</div>
+              <div class="stat-label">Powered Analysis</div>
+            </div>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="globe-stage">
+            <canvas id="heroGlobe" aria-label="Interactive 3D globe"></canvas>
+            <div class="globe-hint">Drag to rotate &nbsp;•&nbsp; Scroll to zoom</div>
+          </div>
+          <div class="badge">Satellite + AI</div>
+        </div>
+      </div>
+
+      <!-- FEATURE GRID -->
+      <section class="section-block">
+        <div class="section-head">
+          <span class="eyebrow">Platform Capabilities</span>
+          <h2 class="section-title">Everything You Need to Understand Your City</h2>
+          <p class="section-sub">Eleven continuously updated indices, satellite-grade data, and AI-driven recommendations — all in one place.</p>
+        </div>
+        <div class="features">
+          <div class="feature-card">
+            <div class="feature-icon">📡</div>
+            <h3>Source-aware Monitoring</h3>
+            <p>Latest available evidence at each source's update cadence.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🌍</div>
+            <h3>Global Coverage</h3>
+            <p>Satellite data from NASA and ESA missions.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🧠</div>
+            <h3>AI-Powered Analysis</h3>
+            <p>Gemini AI provides smart insights.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">📈</div>
+            <h3>Predictive Analytics</h3>
+            <p>Forecast urban health trends.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- HOW IT WORKS -->
+      <section class="section-block testimonials">
+        <div class="section-head">
+          <span class="eyebrow">How Lupus Cortex Works</span>
+          <h2 class="section-title">Observe. Analyze. Verify. Predict. Act.</h2>
+          <p class="section-sub">Select a location, request an evidence-based model analysis, then review provenance before acting.</p>
+        </div>
+
+        <div class="empty-plan"><span>Evidence-first workflow</span><h3>Model-backed results only</h3><p>Unavailable data remains unavailable until the analysis service returns observed, derived or estimated evidence with provenance.</p></div>
+      </section>
+    </section>
+
+    <!-- HEALTH DASHBOARD SECTION -->
+    <section id="dashboard-section" class="section">
+      <div class="dashboard-container">
+        <div class="dashboard-header">
+          <h2>Environmental &amp; Geospatial Dashboard</h2>
+          <div class="location-info">
+            <span id="currentLocation">Dhaka, Bangladesh (23.8103°, 90.4125°)</span>
+            <button class="btn secondary small" id="changeLocationBtn" aria-expanded="false" aria-controls="locationPanel">Change Location</button>
+          </div>
+        </div>
+
+
+        <!-- Device GPS location banner (shown when GPS is off / denied) -->
+        <div id="lxGpsBanner" class="lx-gps-banner hidden" role="alert">
+          <p id="lxGpsBannerText"></p>
+          <div class="lx-banner-actions">
+            <button class="btn primary small" id="lxGpsRetryBtn" type="button">Try again</button>
+            <button class="btn secondary small" id="lxGpsChoosePlaceBtn" type="button">Choose a place</button>
+            <button class="btn secondary small" id="lxGpsDismissBtn" type="button">Dismiss</button>
+          </div>
+        </div>
+
+        <!-- API-key expiry notice (shown when a stored key expired or was rejected) -->
+        <div id="lxKeyNotice" class="lx-key-notice hidden" role="alert">
+          <p id="lxKeyNoticeText"></p>
+          <div class="lx-banner-actions">
+            <button class="btn primary small" id="lxKeyNoticeBtn" type="button">Enter a new key</button>
+            <button class="btn secondary small" id="lxKeyNoticeDismissBtn" type="button">Dismiss</button>
+          </div>
+        </div>
+        <!-- Backend auto-send notice (shown when a pending bundle is sent automatically) -->
+        <div id="lxBackendNotice" class="lx-backend-notice hidden" role="status">
+          <p id="lxBackendNoticeText"></p>
+          <button class="btn secondary small" id="lxBackendNoticeDismissBtn" type="button">Dismiss</button>
+        </div>
+
+        <!-- Data extractor entry point -->
+        <div class="lx-extractor-toolbar">
+          <button class="btn primary" id="lxOpenExtractorBtn" type="button">📥 Extract data</button>
+          <button class="btn secondary" id="lxApiKeysBtn" type="button">🔑 API keys</button>
+          <span class="lx-toolbar-note">Extract the 30 listed components for an area and date range, then send them to the model backend for analysis.</span>
+        </div>
+
+        <!-- Inline Change-Location Panel -->
+        <div id="locationPanel" class="location-panel hidden" aria-hidden="true">
+          <div class="loc-tabs" role="tablist">
+            <button class="loc-tab active" data-loc-tab="place" role="tab" aria-selected="true">🔎 By Place Name</button>
+            <button class="loc-tab" data-loc-tab="coords" role="tab" aria-selected="false">🧭 By Coordinates</button>
+          </div>
+
+          <!-- Place name search -->
+          <div class="loc-pane active" data-pane="place">
+            <div class="loc-input-row">
+              <input type="text" id="placeSearchInput" placeholder="Search any city or place (e.g., Tokyo, Paris, Dhaka University)" autocomplete="off" />
+              <button class="btn primary small" id="placeSearchBtn">Search</button>
+            </div>
+            <div id="placeSuggestions" class="loc-suggestions hidden"></div>
+            <p class="loc-hint">Powered by OpenStreetMap geocoding · Type at least 3 characters for suggestions</p>
+          </div>
+
+          <!-- Coordinates -->
+          <div class="loc-pane" data-pane="coords">
+            <div class="loc-input-row coords">
+              <input type="number" id="coordLatInput" placeholder="Latitude (-90 to 90)" step="0.0001" min="-90" max="90" />
+              <input type="number" id="coordLngInput" placeholder="Longitude (-180 to 180)" step="0.0001" min="-180" max="180" />
+              <button class="btn primary small" id="coordApplyBtn">Apply</button>
+            </div>
+            <p class="loc-hint">The place name will be resolved automatically from the coordinates.</p>
+          </div>
+
+          <div id="locStatus" class="loc-status" aria-live="polite"></div>
+        </div>
+
+        <!-- City and Human Wellbeing Scores -->
+        <div class="score-overview">
+          <div class="overall-score-card">
+            <div class="score-display">
+              <div class="score-number" id="overallScore">--</div>
+              <div class="score-label">Overall Wellbeing Score</div>
+            </div>
+            <div class="score-status" id="scoreStatus">Analyzing...</div>
+          </div>
+          <button class="overall-score-card hwi-score-card" id="hwiScoreCard" type="button" aria-label="Open Human Wellbeing Index details">
+            <div class="score-display">
+              <div class="score-number" id="hwiScore">--</div>
+              <div class="score-label">Human Wellbeing Index</div>
+            </div>
+            <div class="score-status" id="hwiStatus">Analyzing...</div>
+            <div class="hwi-card-cta">View HWI details</div>
+          </button>
+        </div>
+
+
+        <!-- Data Extractor -->
+        <div id="lxExtractorPanel" class="lx-extractor-panel hidden">
+          <div class="lx-extractor-head">
+            <div>
+              <h3>Data Extractor</h3>
+              <p class="lx-panel-sub">Extracts the 30 listed components for the chosen area and date range, using the same sources the collection pipeline used. Nothing is invented — a component with no live evidence is reported as queued, needs-key, or unavailable.</p>
+            </div>
+            <button class="close-popup" id="lxCloseExtractorBtn" aria-label="Close extractor">✕</button>
+          </div>
+
+          <p class="lx-area-label" id="lxAreaLabel">No area selected yet.</p>
+
+          <div class="lx-key-panel-status" id="lxKeyPanelStatus" aria-live="polite">
+            <p><strong>API keys in this browser:</strong></p>
+            <p>OpenAQ — <span id="lxPanelKeyOpenaq">Not set</span></p>
+            <p>CAMS ADS — <span id="lxPanelKeyCams">Not set</span></p>
+            <p>Earthdata — <span id="lxPanelKeyEarthdata">Not set</span></p>
+          </div>
+
+          <fieldset class="lx-fieldset">
+            <legend>Area</legend>
+            <div class="lx-area-tabs" role="tablist">
+              <button class="lx-area-tab active" data-lx-area-tab="place" role="tab" aria-selected="true" type="button">🔎 By Place Name</button>
+              <button class="lx-area-tab" data-lx-area-tab="coords" role="tab" aria-selected="false" type="button">🧭 By Coordinates</button>
+              <button class="lx-area-tab" data-lx-area-tab="bbox" role="tab" aria-selected="false" type="button">🗺️ Bounding Box</button>
+            </div>
+            <div class="lx-area-pane active" data-lx-area-pane="place">
+              <div class="lx-input-row">
+                <input type="text" id="lxPlaceInput" placeholder="Search any city or place" autocomplete="off" />
+                <button class="btn primary small" id="lxPlaceSearchBtn" type="button">Search</button>
+              </div>
+              <div id="lxPlaceSuggestions" class="lx-suggestions hidden"></div>
+              <p class="lx-status-line" id="lxPlaceStatus"></p>
+              <p class="lx-hint">Powered by OpenStreetMap geocoding (Nominatim).</p>
+            </div>
+            <div class="lx-area-pane" data-lx-area-pane="coords">
+              <div class="lx-input-row">
+                <input type="number" id="lxCoordLat" placeholder="Latitude (-90 to 90)" step="0.0001" min="-90" max="90" />
+                <input type="number" id="lxCoordLng" placeholder="Longitude (-180 to 180)" step="0.0001" min="-180" max="180" />
+                <button class="btn primary small" id="lxCoordsApplyBtn" type="button">Apply</button>
+              </div>
+              <p class="lx-status-line" id="lxCoordsStatus"></p>
+            </div>
+            <div class="lx-area-pane" data-lx-area-pane="bbox">
+              <div class="lx-grid-2">
+                <div><label for="lxBboxMinLat">Min latitude</label><input type="number" id="lxBboxMinLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMaxLat">Max latitude</label><input type="number" id="lxBboxMaxLat" placeholder="-90 to 90" step="0.0001" min="-90" max="90" /></div>
+                <div><label for="lxBboxMinLng">Min longitude</label><input type="number" id="lxBboxMinLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+                <div><label for="lxBboxMaxLng">Max longitude</label><input type="number" id="lxBboxMaxLng" placeholder="-180 to 180" step="0.0001" min="-180" max="180" /></div>
+              </div>
+              <div class="lx-input-row" style="margin-top:10px"><button class="btn primary small" id="lxBboxApplyBtn" type="button">Apply bounding box</button></div>
+              <p class="lx-status-line" id="lxBboxStatus"></p>
+            </div>
+          </fieldset>
+
+          <fieldset class="lx-fieldset">
+            <legend>Date range</legend>
+            <div class="lx-date-row">
+              <label><input type="radio" id="lxDateToday" name="lxDateMode" checked /> Present date (today)</label>
+              <label><input type="radio" id="lxDateRange" name="lxDateMode" /> Start and end date</label>
+            </div>
+            <div id="lxDateRangeInputs" class="lx-date-range hidden">
+              <div><label for="lxDateStart">Start date</label><input type="date" id="lxDateStart" /></div>
+              <div><label for="lxDateEnd">End date</label><input type="date" id="lxDateEnd" /></div>
+            </div>
+            <p class="lx-hint">Dates must be between 2015-01-01 and today.</p>
+            <div id="lxDateWarning" class="lx-warning hidden"></div>
+          </fieldset>
+
+          <div class="lx-actions">
+            <button class="btn primary" id="lxExtractBtn" type="button">Extract data</button>
+            <button class="btn secondary hidden" id="lxDownloadBundleBtn" type="button">Download bundle (JSON)</button>
+            <button class="btn secondary hidden" id="lxSendBackendBtn" type="button">Send to backend</button>
+            <button class="btn secondary" id="lxApiKeysBtnPanel" type="button">🔑 API keys</button>
+          </div>
+
+          <div class="lx-progress" aria-hidden="true"><span id="lxExtractProgressBar"></span></div>
+          <p class="lx-progress-label" id="lxExtractProgressLabel">0 of 30 components checked</p>
+          <p class="lx-summary" id="lxExtractSummary"></p>
+
+          <div class="lx-table-wrap">
+            <table class="lx-component-table">
+              <thead><tr><th>ID</th><th>Component</th><th>Source</th><th>Model</th><th>Status</th><th>Evidence</th></tr></thead>
+              <tbody id="lxComponentRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 9 Composite Indices -->
+        <div class="indices-grid" id="indicesGrid">
+          <!-- Will be populated by JavaScript -->
+        </div>
+
+        <!-- Data Visualization Charts -->
+        <div class="charts-container">
+          <div class="chart-card">
+            <div class="chart-card-head">
+              <div>
+                <h3>Index Comparison</h3>
+                <p class="chart-sub">Current vs Target · click a spoke for that index detail</p>
+              </div>
+              <div class="chart-mode-toggle" role="group" aria-label="Radar view mode">
+                <button class="mode-btn active" data-radar-mode="both">Both</button>
+                <button class="mode-btn" data-radar-mode="current">Current</button>
+                <button class="mode-btn" data-radar-mode="gap">Gap</button>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="radarChart"></canvas>
+            </div>
+            <div class="chart-kpis" id="radarKpis"><!-- populated by JS --></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card-head">
+              <div>
+                <h3>Historical Trends</h3>
+                <p class="chart-sub">Pick indices to compare · click the chart for full insights</p>
+              </div>
+              <button class="btn secondary small" id="trendInsightsBtn">📊 Open Insights</button>
+            </div>
+            <div class="trend-range-controls" id="trendRangeControls" role="group" aria-label="Historical evidence range">
+              <button class="trend-range active" data-trend-days="15">15D</button><button class="trend-range" data-trend-days="30">30D</button><button class="trend-range" data-trend-days="45">45D</button><button class="trend-range" data-trend-days="60">60D</button><button class="trend-range" data-trend-days="75">75D</button><button class="trend-range" data-trend-days="90">90D</button>
+            </div>
+            <div id="trendIndexSelector" class="trend-selector" role="group" aria-label="Select indices to display">
+              <!-- populated by JS -->
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="lineChart"></canvas>
+            </div>
+            <div class="chart-kpis" id="trendKpis"><!-- populated by JS --></div>
+          </div>
+        </div>
+
+        <!-- Index comparison & historical trends (rendered by dashboard.js from the model report; empty until the first analysis) -->
+        <div id="lxTrendsSection" class="lx-trends-section">
+          <h2>Index comparison &amp; historical trends</h2>
+          <p id="lxTrendsState" class="lx-trends-state">Awaiting model report — comparison and trend charts appear here after the first analysis. Nothing is plotted until the model returns evidence.</p>
+
+          <div id="lxCompareBlock" class="lx-trends-block hidden">
+            <h3>Index comparison</h3>
+            <p class="chart-sub">Current score against target, and change vs the previous period from the report's own history. Click a bar for full index details.</p>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxCompareChart"></canvas>
+            </div>
+            <div class="detail-table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr><th>Index</th><th>Current score</th><th>Target</th><th>Change vs previous period</th><th>Status</th></tr>
+                </thead>
+                <tbody id="lxCompareTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="lxTrendsIndexBlock" class="lx-trends-block hidden">
+            <h3>Historical trends — index-wise</h3>
+            <p class="chart-sub">Index and HWI scores over the history window returned by the model. Dashed lines are the index targets.</p>
+            <div id="lxTrendsIndexSelector" class="trend-selector" role="group" aria-label="Select indices to display">
+              <!-- populated by JS -->
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxTrendsIndexChart"></canvas>
+            </div>
+            <p id="lxTrendsIndexNote" class="lx-trends-note"></p>
+          </div>
+
+          <div id="lxTrendsCompBlock" class="lx-trends-block hidden">
+            <h3>Historical trends — component-wise</h3>
+            <p class="chart-sub">Per-component values over time, from the report's own history. Components without a returned history series show their latest value and forecast below instead — nothing is invented.</p>
+            <div class="detail-table-wrap">
+              <table class="detail-table">
+                <thead>
+                  <tr><th>Component</th><th>Index</th><th>Latest score</th><th>Change vs previous period</th><th>Status</th><th>Unit</th></tr>
+                </thead>
+                <tbody id="lxCompareCompTableBody"></tbody>
+              </table>
+            </div>
+            <label class="lx-comp-select-label" for="lxTrendsCompSelect">Component trend</label>
+            <select id="lxTrendsCompSelect" class="lx-comp-select"></select>
+            <div class="chart-canvas-wrap">
+              <canvas id="lxTrendsCompChart"></canvas>
+            </div>
+            <p id="lxTrendsCompNote" class="lx-trends-note"></p>
+            <div id="lxTrendsCompDetail"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3D NASA EARTH VIEW SECTION -->
+    <section id="3d-section" class="section">
+      <div class="nasa-container">
+        <div class="nasa-header">
+          <div>
+            <h2>NASA Eyes on Earth - Live Satellite View</h2>
+            <p style="font-size: 13px; color: var(--muted); margin-top: 4px;">
+              Powered by NASA's Jet Propulsion Laboratory
+            </p>
+          </div>
+          <div class="view-controls">
+            <button class="btn primary small" onclick="openTerrainStudio()">🏙️ 3D City Planner</button>
+            <button class="btn secondary small" id="toggle3DView">Switch to Map</button>
+            <button class="btn secondary small" id="rotationToggle" style="display: none;">Auto Rotate: ON</button>
+            <button class="btn secondary small" onclick="showNasaEyesInfo()">ℹ️ Features</button>
+          </div>
+        </div>
+
+        <!-- Location Search Controls -->
+        <div class="search-controls">
+          <div class="search-input-group">
+            <input type="text" id="locationSearch" placeholder="Search by place name or coordinates (lat, lng)" />
+            <button class="btn primary small" id="searchLocationBtn">🔍 Search</button>
+          </div>
+          <div class="search-examples">
+            <span>Examples:</span>
+            <button class="example-btn" onclick="searchExample('New York')">New York</button>
+            <button class="example-btn" onclick="searchExample('Tokyo')">Tokyo</button>
+            <button class="example-btn" onclick="searchExample('40.7128, -74.0060')">Coordinates</button>
+          </div>
+        </div>
+
+        <div id="earth3DContainer"></div>
+        
+        <!-- Weather Data Popup -->
+        <div id="weatherPopup" class="weather-popup hidden">
+          <div class="popup-header">
+            <h3>📍 Live Weather Briefing</h3>
+            <button class="close-popup" onclick="closeWeatherPopup()">✕</button>
+          </div>
+          <div id="weatherContent" class="popup-content">
+            <!-- Weather data will be displayed here -->
+          </div>
+        </div>
+
+        <div id="weatherPanel" class="weather-panel hidden">
+          <!-- Info panel will be displayed here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- MAP SECTION -->
+    <section id="map-section" class="section">
+      <div class="map-container map-explorer">
+        <div class="map-header">
+          <div>
+            <span class="eyebrow">Geo Explorer</span>
+            <h2 class="section-title">Interactive Map &amp; Community Needs</h2>
+            <p class="section-sub">Click anywhere on the map, search by name, or paste coordinates to surface that community's needs and a tiered action plan.</p>
+          </div>
+        </div>
+
+        <div class="map-controls glass-card">
+          <div class="map-control-tabs" role="tablist">
+            <button class="mc-tab active" data-mc-tab="name" role="tab">By Place Name</button>
+            <button class="mc-tab" data-mc-tab="coords" role="tab">By Coordinates</button>
+            <button class="mc-tab" data-mc-tab="click" role="tab">By Map Click</button>
+          </div>
+
+          <div class="mc-panel" data-mc-panel="name">
+            <div class="mc-row">
+              <input type="text" id="mapPlaceSearch" placeholder="Search any city, neighborhood, landmark..." autocomplete="off" />
+              <button class="btn primary" id="mapPlaceSearchBtn">Search</button>
+            </div>
+            <ul id="mapPlaceSuggestions" class="map-suggestions hidden"></ul>
+          </div>
+
+          <div class="mc-panel hidden" data-mc-panel="coords">
+            <div class="mc-row">
+              <input type="number" id="mapLat" placeholder="Latitude (e.g. 23.8103)" step="any" />
+              <input type="number" id="mapLng" placeholder="Longitude (e.g. 90.4125)" step="any" />
+              <button class="btn primary" id="mapCoordsBtn">Go</button>
+            </div>
+            <p class="loc-hint">Tip: any decimal lat/lng works. Negative values for south/west.</p>
+          </div>
+
+          <div class="mc-panel hidden" data-mc-panel="click">
+            <p class="loc-hint">Click any spot on the map below. We'll reverse-geocode the place name and generate the community needs report.</p>
+          </div>
+
+          <div class="mc-status" id="mapStatus">Ready — pick a place to begin.</div>
+        </div>
+
+        <div class="map-layout">
+          <div id="mapView" class="map-view"></div>
+          <aside id="communityPanel" class="community-panel">
+            <div class="community-empty">
+              <div class="empty-illustration">🗺️</div>
+              <h3>No place selected yet</h3>
+              <p>Choose any location on Earth to view its community profile, prioritized needs, and a layered action plan covering individual, industrial, and municipal responses.</p>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- USE CASES SECTION -->
+    <section id="usecases-section" class="section">
+      <div class="usecases-container">
+        <h2>Urban Planning Use Cases</h2>
+        
+        <div class="usecase-form">
+          <h3>Scenario Analysis</h3>
+          <div class="form-group">
+            <label>Location Coordinates</label>
+            <input type="text" id="usecaseLocation" placeholder="23.8103, 90.4125" />
+          </div>
+          <div class="form-group">
+            <label>Location Name (Optional)</label>
+            <input type="text" id="usecaseLocationName" placeholder="e.g., Dhaka University Area" />
+          </div>
+          <div class="form-group">
+            <label>Detailed Scenario Description</label>
+            <textarea id="usecaseDescription" rows="6" placeholder="Provide a detailed description of your scenario and requirements..."></textarea>
+          </div>
+          <button class="btn primary" id="analyzeScenarioBtn">Analyze Scenario</button>
+        </div>
+
+        <div id="recommendationsContainer" class="recommendations-container hidden">
+          <h3>Recommendations</h3>
+          <div id="recommendationsList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AI CHATBOT SECTION -->
+    <section id="chatbot-section" class="section">
+      <div class="chatbot-container">
+        <div class="chatbot-header">
+          <h2>🤖 AI Urban Planning Assistant</h2>
+          <p class="chatbot-subtitle">Powered by Gemini 2.5 Flash AI</p>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <!-- Messages will be populated here -->
+        </div>
+
+        <div class="quick-actions">
+          <button class="quick-btn" data-prompt="What are the key urban health metrics for this location?">Key Metrics</button>
+          <button class="quick-btn" data-prompt="Provide policy recommendations for improving air quality">Policy Advice</button>
+          <button class="quick-btn" data-prompt="How can residents participate in urban planning?">Resident Engagement</button>
+          <button class="quick-btn" data-prompt="Show me urban health policy data">Policy Data</button>
+        </div>
+
+        <div class="chat-input-container">
+          <input type="text" id="chatInput" placeholder="Ask about urban planning, policies, or city health..." />
+          <button class="btn primary" id="sendChatBtn">Send</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+
+  <!-- API Keys Modal -->
+  <div id="lxKeyModal" class="lx-key-modal hidden" role="dialog" aria-modal="true" aria-labelledby="lxKeyModalTitle">
+    <div class="lx-key-backdrop"></div>
+    <div class="lx-key-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow">Data Extractor</span>
+          <h2 id="lxKeyModalTitle">API keys &amp; tokens</h2>
+        </div>
+        <button class="close-popup" id="lxKeyCloseBtn" aria-label="Close">✕</button>
+      </header>
+      <p class="lx-key-intro">The extractor needs these keys to reach the live sources. Leave a field blank to keep the key already stored in this browser. Each key is verified before it is saved, and saved in this browser only, until it expires.</p>
+      <div class="lx-key-field">
+        <label for="lxKeyOpenaq">OpenAQ API key</label>
+        <input type="password" id="lxKeyOpenaq" autocomplete="off" placeholder="Paste your OpenAQ API key" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyOpenaq" type="button">Verify now</button></div>
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusOpenaq">Not set</span></div>
+      </div>
+      <div class="lx-key-field">
+        <label for="lxKeyCams">CAMS ADS API key</label>
+        <input type="password" id="lxKeyCams" autocomplete="off" placeholder="Paste your CAMS ADS API key" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyCams" type="button">Verify now</button></div>
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusCams">Not set</span></div>
+      </div>
+      <div class="lx-key-field">
+        <label for="lxKeyEarthdata">Earthdata token</label>
+        <input type="password" id="lxKeyEarthdata" autocomplete="off" placeholder="Paste your Earthdata token" />
+        <div class="lx-key-row"><button class="btn secondary small" id="lxKeyVerifyEarthdata" type="button">Verify now</button></div>
+        <div class="lx-key-stored">Stored: <span id="lxKeyStatusEarthdata">Not set</span></div>
+      </div>
+      <div class="lx-key-field">
+        <label for="lxBackendUrl">Model backend URL</label>
+        <input type="text" id="lxBackendUrl" autocomplete="off" placeholder="http://127.0.0.1:8100" />
+        <div class="lx-key-stored">The local model backend runs on this Mac at 127.0.0.1:8100. The public site cannot reach localhost — paste a public backend URL here when one exists.</div>
+      </div>
+      <p class="lx-key-privacy">Keys are saved in this browser only, until they expire. They are verified before they are stored and checked again before each extraction. The OpenAQ key is sent only to api.openaq.org, and the Earthdata token only to cmr.earthdata.nasa.gov for verification. The CAMS ADS key is never sent from the browser — CAMS ADS is not browser-callable, so those legs are queued for the backend and the key is checked by the backend when it runs. Keys are never logged.</p>
+      <div class="lx-key-actions">
+        <button class="btn primary" id="lxKeySaveBtn" type="button">Save keys</button>
+        <button class="btn secondary" id="lxKeyContinueBtn" type="button">Continue without keys</button>
+        <button class="btn secondary" id="lxKeyForgetBtn" type="button">Forget all keys</button>
+      </div>
+      <p class="lx-key-note" id="lxKeyNote"></p>
+    </div>
+  </div>
+
+  <!-- Index Detail Modal -->
+  <div id="indexDetailModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="indexModalTitle">
+    <div class="index-modal-backdrop" data-close-modal></div>
+    <div class="index-modal-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow" id="indexModalCategory">Category</span>
+          <h2 id="indexModalTitle">Index Name</h2>
+        </div>
+        <button class="close-popup" data-close-modal aria-label="Close">✕</button>
+      </header>
+
+      <!-- Row 1: Summary metrics -->
+      <div class="index-summary-row" id="indexSummaryRow">
+        <!-- populated by JS -->
+      </div>
+
+      <!-- Row 2: Tabs -->
+      <div class="index-tabs" role="tablist">
+        <button class="index-tab active" data-tab="components" role="tab" aria-selected="true">Components</button>
+        <button class="index-tab" data-tab="dataSources" role="tab" aria-selected="false">Data Sources</button>
+        <button class="index-tab" data-tab="technology" role="tab" aria-selected="false">Technology</button>
+        <button class="index-tab" data-tab="formula" role="tab" aria-selected="false">Formula</button>
+        <button class="index-tab" data-tab="outlook" role="tab" aria-selected="false">Outlook</button>
+        <button class="index-tab" data-tab="suggestions" role="tab" aria-selected="false">Suggestions</button>
+        <button class="index-tab" data-tab="warnings" role="tab" aria-selected="false">Warnings</button>
+        <button class="index-tab" data-tab="predictions" role="tab" aria-selected="false">Predictions</button>
+        <button class="index-tab" data-tab="performance" role="tab" aria-selected="false">Performance</button>
+      </div>
+
+      <div class="index-tab-content" id="indexTabContent" role="tabpanel">
+        <!-- populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Trend Insights Modal -->
+  <div id="trendInsightsModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="trendInsightsTitle">
+    <div class="index-modal-backdrop" data-close-trends></div>
+    <div class="index-modal-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow">Historical Trends</span>
+          <h2 id="trendInsightsTitle">Trend Insights</h2>
+        </div>
+        <button class="close-popup" data-close-trends aria-label="Close">✕</button>
+      </header>
+      <div id="trendInsightsBody"><!-- populated by JS --></div>
+    </div>
+  </div>
+
+  <!-- Community Need Detail Modal -->
+  <div id="needDetailModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="needDetailTitle">
+    <div class="index-modal-backdrop" data-close-need></div>
+    <div class="index-modal-panel need-detail-panel" role="document">
+      <header class="index-modal-header need-modal-header">
+        <div class="need-modal-titlewrap">
+          <span class="need-modal-icon" id="needModalIcon">🌍</span>
+          <div>
+            <span class="eyebrow" id="needModalEyebrow">Community Need</span>
+            <h2 id="needDetailTitle">Need</h2>
+            <div class="need-modal-meta">
+              <span class="nc-pill" id="needModalPill">—</span>
+              <span class="need-modal-place" id="needModalPlace">—</span>
+            </div>
+          </div>
+        </div>
+        <button class="close-popup" data-close-need aria-label="Close">✕</button>
+      </header>
+      <div id="needDetailBody"><!-- populated by JS --></div>
+    </div>
+  </div>
+
+  <!-- 3D Terrain Studio Modal -->
+  <div id="terrainStudioModal" class="terrain-modal hidden" role="dialog" aria-modal="true" aria-labelledby="terrainStudioTitle">
+    <div class="terrain-backdrop"></div>
+    <div class="terrain-panel" role="document">
+      <header class="terrain-head">
+        <div>
+          <span class="eyebrow">Satellite → Editable 3D City Planner</span>
+          <h2 id="terrainStudioTitle">🏙️ 3D City Planner Studio</h2>
+          <p class="terrain-sub">Turn any location into a live 3D site from real satellite &amp; elevation data, then zone land use, generate a city, lay roads, sculpt terrain, run a solar shadow study, and get an AI planning review — inspired by InfraWorks &amp; CityEngine.</p>
+        </div>
+        <button class="close-popup" id="terrainCloseBtn" aria-label="Close">✕</button>
+      </header>
+
+      <div class="terrain-generate-bar">
+        <div class="terrain-search" id="terrainSearchWrap">
+          <input type="text" id="terrainLocationInput" placeholder="Place name or coordinates (lat, lng)" autocomplete="off" />
+          <div id="terrainSearchSuggest" class="terrain-suggest hidden"></div>
+        </div>
+        <label class="terrain-field">
+          <span>Area (km)</span>
+          <select id="terrainArea">
+            <option value="2">2</option>
+            <option value="5" selected>5</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+        <label class="terrain-field">
+          <span>Detail</span>
+          <select id="terrainResolution">
+            <option value="32">Preview (32²)</option>
+            <option value="48">Standard (48²)</option>
+            <option value="64" selected>Detailed (64²)</option>
+            <option value="96">High Detail (96²)</option>
+          </select>
+        </label>
+        <button class="btn primary" id="terrainGenerateBtn">✨ Build Digital Twin</button>
+        <button class="btn secondary" id="terrainImportGisBtn" title="Reload real OpenStreetMap buildings, roads, water and land-use">↻ Reload GIS</button>
+        <button class="btn secondary" id="terrainBuildCityBtn" title="Rebuild terrain + GIS as a clean architectural massing model">Refresh Twin</button>
+      </div>
+
+      <div class="terrain-examples">
+        <span>Try:</span>
+        <button class="example-btn" onclick="terrainExample('Mount Everest')">Mount Everest</button>
+        <button class="example-btn" onclick="terrainExample('Grand Canyon')">Grand Canyon</button>
+        <button class="example-btn" onclick="terrainExample('Kathmandu')">Kathmandu</button>
+        <button class="example-btn" onclick="terrainExample('27.9881, 86.9250')">27.9881, 86.9250</button>
+        <button class="example-btn" onclick="terrainExample('36.5786, -118.2923')">36.5786, -118.2923</button>
+      </div>
+
+      <div class="terrain-status" id="terrainStatus">Enter a location and generate a 3D terrain model.</div>
+
+      <div class="terrain-workspace">
+        <div class="terrain-canvas-col">
+          <div id="terrainCanvasWrap" class="terrain-canvas-wrap">
+            <div class="terrain-placeholder">
+              <div class="terrain-placeholder-icon">🗺️</div>
+              <p>Generate a location to build an interactive 3D terrain</p>
+            </div>
+            <aside id="terrainTwinPreview" class="terrain-twin-preview hidden" aria-label="Observed satellite imagery with planned changes">
+              <div class="twin-preview-head">
+                <span>Digital Twin</span>
+                <small>Observed + planned</small>
+              </div>
+              <canvas id="terrainTwinPreviewCanvas" width="240" height="160"></canvas>
+              <p>NASA imagery with editable overlays</p>
+            </aside>
+          </div>
+
+          <div id="terrainToolbar" class="terrain-toolbar hidden">
+            <div class="terrain-tool-group" role="group" aria-label="Edit tools">
+              <button class="terrain-tool active" data-mode="orbit" title="Orbit / rotate">🖐️ Orbit</button>
+              <button class="terrain-tool" data-mode="raise" title="Raise terrain">⬆️ Raise</button>
+              <button class="terrain-tool" data-mode="lower" title="Lower terrain">⬇️ Lower</button>
+              <button class="terrain-tool" data-mode="smooth" title="Smooth terrain">〰️ Smooth</button>
+              <button class="terrain-tool" data-mode="flatten" title="Flatten to first click height">🟦 Flatten</button>
+            </div>
+            <div class="terrain-tool-group" role="group" aria-label="Object tools">
+              <button class="terrain-tool" data-mode="structure" title="Build / place object">🏗️ Build</button>
+              <button class="terrain-tool" data-mode="select" title="Select object">🎯 Select</button>
+              <button class="terrain-tool" data-mode="move" title="Move selected object">✋ Move</button>
+              <button class="terrain-tool" data-mode="delete" title="Delete object (click)">🗑️ Delete</button>
+            </div>
+            <div class="terrain-tool-group" role="group" aria-label="City planning tools">
+              <button class="terrain-tool" data-mode="zone" title="Paint land-use zones">🎨 Zone</button>
+              <button class="terrain-tool" data-mode="road" title="Draw a road (click points)">🛣️ Road</button>
+              <button class="terrain-tool" data-mode="measure" title="Measure distance">📏 Measure</button>
+            </div>
+            <label class="terrain-field inline">
+              <span>Land use</span>
+              <select id="zonePaintType">
+                <option value="residential">🟢 Residential</option>
+                <option value="commercial">🔵 Commercial</option>
+                <option value="industrial">🟠 Industrial</option>
+                <option value="park">🌳 Park / Green</option>
+                <option value="water">💧 Water</option>
+                <option value="none">⬜ Erase</option>
+              </select>
+            </label>
+            <label class="terrain-field inline">
+              <span>Object</span>
+              <select id="structureType">
+                <option value="building">Building</option>
+                <option value="tower">Tower</option>
+                <option value="bridge">Bridge</option>
+                <option value="dam">Dam</option>
+                <option value="road">Road</option>
+                <option value="tree">Tree</option>
+                <option value="marker">Marker</option>
+              </select>
+            </label>
+            <label class="terrain-slider">
+              <span>Object size <b id="terrainStructureSizeVal">1.0×</b></span>
+              <input type="range" id="terrainStructureSize" min="0.3" max="4" step="0.1" value="1" />
+            </label>
+            <label class="terrain-slider">
+              <span>Exaggeration <b id="terrainExaggVal">1.0×</b></span>
+              <input type="range" id="terrainExagg" min="0.5" max="4" step="0.1" value="1" />
+            </label>
+            <label class="terrain-slider">
+              <span>Brush size</span>
+              <input type="range" id="terrainBrushRadius" min="1" max="8" step="0.5" value="2.5" />
+            </label>
+            <label class="terrain-slider">
+              <span>Brush strength</span>
+              <input type="range" id="terrainBrushStrength" min="0.1" max="2" step="0.1" value="0.6" />
+            </label>
+            <label class="terrain-slider">
+              <span>Sun time <b id="terrainSunTimeVal">12:00</b></span>
+              <input type="range" id="terrainSunTime" min="6" max="18" step="0.25" value="12" />
+            </label>
+            <div class="terrain-tool-group">
+              <button class="btn primary small" id="terrainGenerateCityBtn" title="Procedurally build a city from your zoning">🏙️ Generate City</button>
+              <button class="btn secondary small" id="terrainClearCityBtn">🧹 Clear City</button>
+              <button class="btn secondary small" id="terrainRoadFinishBtn">✅ Finish Road</button>
+              <button class="btn secondary small" id="terrainZoneViewBtn">🗺️ Zones: off</button>
+              <button class="btn secondary small" id="terrainZoneClearBtn">❌ Clear Zones</button>
+              <button class="btn secondary small" id="terrainSunBtn">🌞 Sun study: off</button>
+              <button class="btn secondary small" id="terrainMeasureClearBtn">📏 Clear Measure</button>
+            </div>
+            <label class="terrain-field inline">
+              <span>Style</span>
+              <select id="terrainStyleSelect" title="Visualization style">
+                <option value="white" selected>⬜ Architectural</option>
+                <option value="satellite">🛰️ Satellite overlay</option>
+                <option value="colorful">🌈 Analytical color</option>
+                <option value="realistic">🏙️ Realistic</option>
+              </select>
+            </label>
+            <div class="terrain-tool-group">
+              <button class="btn secondary small" id="terrainResetViewBtn" title="Frame the whole model (3/4 aerial)">🎥 Reset View</button>
+              <button class="btn secondary small" id="terrainTopViewBtn" title="Look straight down (map view)">⬇️ Top View</button>
+              <button class="btn secondary small" id="terrainSurfaceBtn">🛰️ Satellite</button>
+              <button class="btn secondary small" id="terrainWireBtn">🔲 Wireframe</button>
+              <button class="btn secondary small" id="terrainResetBtn">↺ Reset</button>
+            </div>
+            <div id="terrainSelection" class="terrain-selection hidden"></div>
+          </div>
+          <p class="terrain-hint">Observed twin: <b>Build Digital Twin</b> loads terrain + real GIS geometry. Scenario mode: <b>Zone</b> paint land use → <b>Generate City</b> → add <b>Road</b>s (click points, then Finish Road) → <b>Sun study</b> for shadows → <b>Analyze</b> for an AI planning review. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, <kbd>Del</kbd> delete selected.</p>
+        </div>
+
+        <aside class="terrain-side">
+
+        <section id="lxExportPanel" class="lx-export" aria-label="Export configurator">
+          <div class="tx-panel-head">
+            <h3 class="tx-panel-title">Export — 2D &amp; 3D site data</h3>
+            <span class="tx-panel-tag">Open data</span>
+          </div>
+          <p class="tx-provenance">Sources: OpenStreetMap (buildings, roads, railways, water, green space) · Elevation: Open-Meteo / Terrarium DEM. Exports are derived from open data and are <b>not survey-grade</b> — do not use for legal boundaries or construction staking.</p>
+
+          <div class="tx-area-block">
+            <p class="tx-block-label">Area</p>
+            <div class="tx-map-wrap">
+              <canvas id="txMapCanvas" width="640" height="420" aria-label="2D preview map with selection box"></canvas>
+              <span id="txAreaPill" class="tx-area-pill" title="Selection is within the 50 km² limit.">Max. 50 km²</span>
+            </div>
+            <p id="txBboxReadout" class="tx-readout">Generate a location first — the selection box appears on the 2D preview map.</p>
+            <p id="txCoverageNote" class="tx-coverage"></p>
+          </div>
+
+          <div class="tx-section-tool">
+            <button type="button" class="btn secondary small" id="txSectionToggle">✂️ Create a section</button>
+            <div id="txSectionControls" class="tx-section-controls hidden">
+              <label>Mode
+                <select id="txSectionModeSelect">
+                  <option value="select">Select</option>
+                  <option value="draw">Draw</option>
+                </select>
+              </label>
+              <button type="button" class="btn primary small" id="txSectionGenerate">Generate</button>
+              <p class="tx-hint">Drag the blue endpoints on the map, or switch to Draw and click two points. Generate samples the DEM along the line.</p>
+              <canvas id="txProfileCanvas" width="560" height="180"></canvas>
+              <p id="txProfileStats" class="tx-readout"></p>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="satellite">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="satellite" checked /> Satellite Image</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-satellite">
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="satellite" data-tx-format="JPEG">JPEG</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="d2">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="d2" checked /> 2D Vectorial Map</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-d2">
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="roads" checked /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="railways" checked /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="waterways" checked /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="shadows" checked /> Building Shadows</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d2" data-tx-layer="contours" checked /> Contour Lines <button type="button" class="tx-interval-btn" id="tx2dContourBtn" data-tx-interval="contour">5 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="d2" data-tx-format="DXF">DXF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d2" data-tx-format="SVG">SVG</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="d3">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="d3" checked /> 3D Modeling</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body" id="txSection-d3">
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="roads" /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="railways" /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="waterways" /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="contours" /> Contour Lines <button type="button" class="tx-interval-btn" id="tx3dContourBtn" data-tx-interval="contour">5 m</button></label>
+              <label class="tx-layer"><input type="checkbox" data-tx-section="d3" data-tx-layer="terrainMesh" checked /> Terrain Mesh <button type="button" class="tx-interval-btn" id="txDtmBtn" data-tx-interval="dtm">20 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="d3" data-tx-format="DXF">DXF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="OBJ">OBJ</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="glTF">glTF</button>
+                <button type="button" class="tx-fmt" data-tx-section="d3" data-tx-format="STL">STL</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="tx-section">
+            <div class="tx-section-head" data-tx-section="raw">
+              <label class="tx-master-label"><input type="checkbox" class="tx-master" data-tx-section="raw" /> Raw Formats</label>
+              <span class="tx-chevron">▾</span>
+            </div>
+            <div class="tx-section-body collapsed" id="txSection-raw">
+              <label class="tx-layer"><input type="checkbox" id="txRaw-buildings" data-tx-section="raw" data-tx-layer="buildings" checked /> Buildings</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-roads" data-tx-section="raw" data-tx-layer="roads" checked /> Roads</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-railways" data-tx-section="raw" data-tx-layer="railways" checked /> Railways</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-waterways" data-tx-section="raw" data-tx-layer="waterways" checked /> Waterways</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-trees" data-tx-section="raw" data-tx-layer="trees" checked /> Trees and Green spaces</label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-contours" data-tx-section="raw" data-tx-layer="contours" checked /> Contour Lines <button type="button" class="tx-interval-btn" id="txRawContourBtn" data-tx-interval="contour">5 m</button></label>
+              <label class="tx-layer"><input type="checkbox" id="txRaw-terrain" data-tx-section="raw" data-tx-layer="terrain" /> Terrain <button type="button" class="tx-interval-btn" id="txRawDtmBtn" data-tx-interval="dtm">20 m</button></label>
+              <p class="tx-fmt-label">Format</p>
+              <div class="tx-fmt-row">
+                <button type="button" class="tx-fmt selected" data-tx-section="raw" data-tx-format="GeoJSON">GeoJSON</button>
+                <button type="button" class="tx-fmt" data-tx-section="raw" data-tx-format="TXT">TXT</button>
+              </div>
+            </div>
+          </div>
+
+          <button type="button" class="btn primary tx-export-now" id="txExportNow">Export Now</button>
+          <p id="txNote" class="tx-note hidden"></p>
+          <p id="txExportProgress" class="tx-progress"></p>
+          <div id="txMyExport" class="tx-my-export hidden">
+            <h4>My export</h4>
+            <div id="txExportFiles" class="tx-file-list"></div>
+            <p id="txExportNotes" class="tx-export-notes"></p>
+          </div>
+        </section>
+          <div class="terrain-stats" id="terrainStats">
+            <div><span>Relief</span><strong>—</strong></div>
+            <div><span>Mean elev.</span><strong>—</strong></div>
+            <div><span>Buildings</span><strong>0</strong></div>
+            <div><span>Est. population</span><strong>0</strong></div>
+          </div>
+
+          <div class="terrain-export">
+            <button class="btn primary" id="terrainAnalyzeBtn">Analyze Environmental Impact</button>
+            <button class="btn secondary" id="terrainDownloadBtn">💾 Export Plan (JSON)</button>
+          </div>
+
+          <div class="terrain-model-export">
+            <p class="terrain-model-title">🧱 Export 3D Model</p>
+            <div class="terrain-model-btns">
+              <button class="btn secondary small" id="terrainExportGlbBtn" title="Textured model (Blender / Windows 3D Viewer)">GLB · textured</button>
+              <button class="btn secondary small" id="terrainExportObjBtn" title="OBJ + MTL + satellite texture (CAD / Blender)">OBJ + texture</button>
+              <button class="btn secondary small" id="terrainExportStlBtn" title="Watertight solid for 3D printing">STL · 3D print</button>
+            </div>
+          </div>
+
+          <div id="terrainAnalysis" class="terrain-analysis hidden">
+            <h4>Environmental Impact Analysis</h4>
+            <div id="terrainAnalysisBody" class="terrain-analysis-body"></div>
+          </div>
+
+          <div class="terrain-help">
+            <p><strong>City planner workflow</strong></p>
+            <ul>
+              <li>🎨 <b>Zone</b> — paint residential / commercial / industrial / parks / water</li>
+              <li>🏙️ <b>Generate City</b> — procedurally build from your zoning</li>
+              <li>🛣️ <b>Road</b> — click points, then Finish Road</li>
+              <li>⛰️ Sculpt terrain &amp; place custom structures</li>
+              <li>🌞 <b>Sun study</b> — shadows across the day</li>
+              <li>📏 <b>Measure</b> real-world distances</li>
+              <li>✨ AI planning review + JSON export</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+
+  <div id="txIntervalMenu" class="tx-interval-menu hidden" role="menu">
+    <input type="text" id="txIntervalInput" value="5.00 m" aria-label="Interval in metres" />
+    <div id="txIntervalOptions" class="tx-interval-options"></div>
+  </div>
+
+  <footer class="footer">
+    <p>© 2024 LUPUS CORTEX - Urban Intelligence Solutions | www.lupus-cortex.com</p>
+    <p>Proprietary analysis - authorized use only.</p>
+  </footer>
+
+  <!-- Main Application Scripts -->
+  <script src="app.js"></script>
+  <script src="analysis-client.js"></script>
+  <script src="indexDetails.js"></script>
+  <script src="dashboard.js"></script>
+  <script src="data-extractor.js"></script>
+  <script src="nasa3d.js"></script>
+  <script src="chatbot.js"></script>
+  <script src="usecases.js"></script>
+  <script src="map.js"></script>
+  <script src="terrain3d fixed.js"></script>
+  <script src="local-insights.js"></script>
+</body>
+</html>
