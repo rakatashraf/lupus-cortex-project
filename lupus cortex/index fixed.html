@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>LUPUS CORTEX - Urban Intelligence Solutions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Advanced urban intelligence platform for monitoring city health, sustainability, and environmental quality using satellite data and AI insights." />
+  <link rel="icon" type="image/png" href="assets/logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" />
+  <link rel="stylesheet" href="style fixed.css" />
+  <!-- External Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <!-- Three.js 3D model exporters (STL / OBJ / glTF) — turn terrain into 3D models -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/STLExporter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+  <!-- GPU-friendly geometry merging for GIS feature extrusion -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/utils/BufferGeometryUtils.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <!-- Navigation Header -->
+  <header class="top-bar">
+    <a class="logo" href="#" aria-label="Lupus Cortex — Home" data-section="welcome">
+      <img src="assets/logo.png" alt="Lupus Cortex" />
+    </a>
+    <nav class="nav">
+      <button class="nav-btn" data-section="welcome">Home</button>
+      <button class="nav-btn" data-section="dashboard">Dashboard</button>
+      <button class="nav-btn" data-section="map">Map</button>
+      <button class="nav-btn" data-section="3d">3D View</button>
+      <button class="nav-btn" data-section="usecases">Use Cases</button>
+      <button class="nav-btn" data-section="chatbot">AI Chat</button>
+    </nav>
+    <button class="notif-btn">Notifications</button>
+  </header>
+  <section class="analysis-status-bar" id="analysisStatusBar" aria-live="polite">
+    <div><span class="analysis-status-dot"></span><b id="analysisStatusMode">AWAITING MODEL REPORT</b></div>
+    <div id="analysisStatusLocation">Select a location to begin evidence-based analysis.</div>
+    <div id="analysisStatusMeta">Coverage, provenance and confidence are unavailable until the model responds.</div>
+    <button class="btn secondary small" id="refreshAnalysisBtn" type="button">Refresh</button>
+  </section>
+
+  <main id="main-content">
+    <!-- WELCOME SECTION -->
+    <section id="welcome-section" class="section active">
+      <div class="hero">
+        <div class="hero-content">
+          <p class="subtitle">Advanced Urban Intelligence</p>
+          <h1>Monitor Your City's<br />Health &amp; Sustainability</h1>
+          <p class="hero-text">
+            Comprehensive real-time analysis of urban environmental quality,
+            social well-being, and disaster preparedness using satellite data
+            and AI insights.
+          </p>
+          <div class="hero-actions">
+            <button class="btn primary" id="startAnalysisBtn">Start Analysis</button>
+            <button class="btn secondary">Learn More</button>
+          </div>
+          <div class="hero-stats">
+            <div class="stat">
+              <div class="stat-number">9</div>
+              <div class="stat-label">Domain Indices + HWI</div>
+            </div>
+            <div class="stat">
+              <div class="stat-number">Latest</div>
+              <div class="stat-label">Available Evidence</div>
+            </div>
+            <div class="stat">
+              <div class="stat-number">AI</div>
+              <div class="stat-label">Powered Analysis</div>
+            </div>
+          </div>
+        </div>
+        <div class="hero-visual">
+          <div class="globe-stage">
+            <canvas id="heroGlobe" aria-label="Interactive 3D globe"></canvas>
+            <div class="globe-hint">Drag to rotate &nbsp;•&nbsp; Scroll to zoom</div>
+          </div>
+          <div class="badge">Satellite + AI</div>
+        </div>
+      </div>
+
+      <!-- FEATURE GRID -->
+      <section class="section-block">
+        <div class="section-head">
+          <span class="eyebrow">Platform Capabilities</span>
+          <h2 class="section-title">Everything You Need to Understand Your City</h2>
+          <p class="section-sub">Eleven continuously updated indices, satellite-grade data, and AI-driven recommendations — all in one place.</p>
+        </div>
+        <div class="features">
+          <div class="feature-card">
+            <div class="feature-icon">📡</div>
+            <h3>Source-aware Monitoring</h3>
+            <p>Latest available evidence at each source's update cadence.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🌍</div>
+            <h3>Global Coverage</h3>
+            <p>Satellite data from NASA and ESA missions.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🧠</div>
+            <h3>AI-Powered Analysis</h3>
+            <p>Gemini AI provides smart insights.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">📈</div>
+            <h3>Predictive Analytics</h3>
+            <p>Forecast urban health trends.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- HOW IT WORKS -->
+      <section class="section-block testimonials">
+        <div class="section-head">
+          <span class="eyebrow">How Lupus Cortex Works</span>
+          <h2 class="section-title">Observe. Analyze. Verify. Predict. Act.</h2>
+          <p class="section-sub">Select a location, request an evidence-based model analysis, then review provenance before acting.</p>
+        </div>
+
+        <div class="empty-plan"><span>Evidence-first workflow</span><h3>Model-backed results only</h3><p>Unavailable data remains unavailable until the analysis service returns observed, derived or estimated evidence with provenance.</p></div>
+      </section>
+    </section>
+
+    <!-- HEALTH DASHBOARD SECTION -->
+    <section id="dashboard-section" class="section">
+      <div class="dashboard-container">
+        <div class="dashboard-header">
+          <h2>Environmental &amp; Geospatial Dashboard</h2>
+          <div class="location-info">
+            <span id="currentLocation">Dhaka, Bangladesh (23.8103°, 90.4125°)</span>
+            <button class="btn secondary small" id="changeLocationBtn" aria-expanded="false" aria-controls="locationPanel">Change Location</button>
+          </div>
+        </div>
+
+        <!-- Inline Change-Location Panel -->
+        <div id="locationPanel" class="location-panel hidden" aria-hidden="true">
+          <div class="loc-tabs" role="tablist">
+            <button class="loc-tab active" data-loc-tab="place" role="tab" aria-selected="true">🔎 By Place Name</button>
+            <button class="loc-tab" data-loc-tab="coords" role="tab" aria-selected="false">🧭 By Coordinates</button>
+          </div>
+
+          <!-- Place name search -->
+          <div class="loc-pane active" data-pane="place">
+            <div class="loc-input-row">
+              <input type="text" id="placeSearchInput" placeholder="Search any city or place (e.g., Tokyo, Paris, Dhaka University)" autocomplete="off" />
+              <button class="btn primary small" id="placeSearchBtn">Search</button>
+            </div>
+            <div id="placeSuggestions" class="loc-suggestions hidden"></div>
+            <p class="loc-hint">Powered by OpenStreetMap geocoding · Type at least 3 characters for suggestions</p>
+          </div>
+
+          <!-- Coordinates -->
+          <div class="loc-pane" data-pane="coords">
+            <div class="loc-input-row coords">
+              <input type="number" id="coordLatInput" placeholder="Latitude (-90 to 90)" step="0.0001" min="-90" max="90" />
+              <input type="number" id="coordLngInput" placeholder="Longitude (-180 to 180)" step="0.0001" min="-180" max="180" />
+              <button class="btn primary small" id="coordApplyBtn">Apply</button>
+            </div>
+            <p class="loc-hint">The place name will be resolved automatically from the coordinates.</p>
+          </div>
+
+          <div id="locStatus" class="loc-status" aria-live="polite"></div>
+        </div>
+
+        <!-- City and Human Wellbeing Scores -->
+        <div class="score-overview">
+          <div class="overall-score-card">
+            <div class="score-display">
+              <div class="score-number" id="overallScore">--</div>
+              <div class="score-label">Evidence Quality</div>
+            </div>
+            <div class="score-status" id="scoreStatus">Analyzing...</div>
+          </div>
+          <button class="overall-score-card hwi-score-card" id="hwiScoreCard" type="button" aria-label="Open Human Wellbeing Index details">
+            <div class="score-display">
+              <div class="score-number" id="hwiScore">--</div>
+              <div class="score-label">Human Wellbeing Index</div>
+            </div>
+            <div class="score-status" id="hwiStatus">Analyzing...</div>
+            <div class="hwi-card-cta">View HWI details</div>
+          </button>
+        </div>
+
+        <!-- 9 Composite Indices -->
+        <div class="indices-grid" id="indicesGrid">
+          <!-- Will be populated by JavaScript -->
+        </div>
+
+        <!-- Data Visualization Charts -->
+        <div class="charts-container">
+          <div class="chart-card">
+            <div class="chart-card-head">
+              <div>
+                <h3>Index Comparison</h3>
+                <p class="chart-sub">Current vs Target · click a spoke for that index detail</p>
+              </div>
+              <div class="chart-mode-toggle" role="group" aria-label="Radar view mode">
+                <button class="mode-btn active" data-radar-mode="both">Both</button>
+                <button class="mode-btn" data-radar-mode="current">Current</button>
+                <button class="mode-btn" data-radar-mode="gap">Gap</button>
+              </div>
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="radarChart"></canvas>
+            </div>
+            <div class="chart-kpis" id="radarKpis"><!-- populated by JS --></div>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card-head">
+              <div>
+                <h3>Historical Trends</h3>
+                <p class="chart-sub">Pick indices to compare · click the chart for full insights</p>
+              </div>
+              <button class="btn secondary small" id="trendInsightsBtn">📊 Open Insights</button>
+            </div>
+            <div id="trendIndexSelector" class="trend-selector" role="group" aria-label="Select indices to display">
+              <!-- populated by JS -->
+            </div>
+            <div class="chart-canvas-wrap">
+              <canvas id="lineChart"></canvas>
+            </div>
+            <div class="chart-kpis" id="trendKpis"><!-- populated by JS --></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3D NASA EARTH VIEW SECTION -->
+    <section id="3d-section" class="section">
+      <div class="nasa-container">
+        <div class="nasa-header">
+          <div>
+            <h2>NASA Eyes on Earth - Live Satellite View</h2>
+            <p style="font-size: 13px; color: var(--muted); margin-top: 4px;">
+              Powered by NASA's Jet Propulsion Laboratory
+            </p>
+          </div>
+          <div class="view-controls">
+            <button class="btn primary small" onclick="openTerrainStudio()">🏙️ 3D City Planner</button>
+            <button class="btn secondary small" id="toggle3DView">Switch to Map</button>
+            <button class="btn secondary small" id="rotationToggle" style="display: none;">Auto Rotate: ON</button>
+            <button class="btn secondary small" onclick="showNasaEyesInfo()">ℹ️ Features</button>
+          </div>
+        </div>
+
+        <!-- Location Search Controls -->
+        <div class="search-controls">
+          <div class="search-input-group">
+            <input type="text" id="locationSearch" placeholder="Search by place name or coordinates (lat, lng)" />
+            <button class="btn primary small" id="searchLocationBtn">🔍 Search</button>
+          </div>
+          <div class="search-examples">
+            <span>Examples:</span>
+            <button class="example-btn" onclick="searchExample('New York')">New York</button>
+            <button class="example-btn" onclick="searchExample('Tokyo')">Tokyo</button>
+            <button class="example-btn" onclick="searchExample('40.7128, -74.0060')">Coordinates</button>
+          </div>
+        </div>
+
+        <div id="earth3DContainer"></div>
+        
+        <!-- Weather Data Popup -->
+        <div id="weatherPopup" class="weather-popup hidden">
+          <div class="popup-header">
+            <h3>📍 Live Weather Briefing</h3>
+            <button class="close-popup" onclick="closeWeatherPopup()">✕</button>
+          </div>
+          <div id="weatherContent" class="popup-content">
+            <!-- Weather data will be displayed here -->
+          </div>
+        </div>
+
+        <div id="weatherPanel" class="weather-panel hidden">
+          <!-- Info panel will be displayed here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- MAP SECTION -->
+    <section id="map-section" class="section">
+      <div class="map-container map-explorer">
+        <div class="map-header">
+          <div>
+            <span class="eyebrow">Geo Explorer</span>
+            <h2 class="section-title">Interactive Map &amp; Community Needs</h2>
+            <p class="section-sub">Click anywhere on the map, search by name, or paste coordinates to surface that community's needs and a tiered action plan.</p>
+          </div>
+        </div>
+
+        <div class="map-controls glass-card">
+          <div class="map-control-tabs" role="tablist">
+            <button class="mc-tab active" data-mc-tab="name" role="tab">By Place Name</button>
+            <button class="mc-tab" data-mc-tab="coords" role="tab">By Coordinates</button>
+            <button class="mc-tab" data-mc-tab="click" role="tab">By Map Click</button>
+          </div>
+
+          <div class="mc-panel" data-mc-panel="name">
+            <div class="mc-row">
+              <input type="text" id="mapPlaceSearch" placeholder="Search any city, neighborhood, landmark..." autocomplete="off" />
+              <button class="btn primary" id="mapPlaceSearchBtn">Search</button>
+            </div>
+            <ul id="mapPlaceSuggestions" class="map-suggestions hidden"></ul>
+          </div>
+
+          <div class="mc-panel hidden" data-mc-panel="coords">
+            <div class="mc-row">
+              <input type="number" id="mapLat" placeholder="Latitude (e.g. 23.8103)" step="any" />
+              <input type="number" id="mapLng" placeholder="Longitude (e.g. 90.4125)" step="any" />
+              <button class="btn primary" id="mapCoordsBtn">Go</button>
+            </div>
+            <p class="loc-hint">Tip: any decimal lat/lng works. Negative values for south/west.</p>
+          </div>
+
+          <div class="mc-panel hidden" data-mc-panel="click">
+            <p class="loc-hint">Click any spot on the map below. We'll reverse-geocode the place name and generate the community needs report.</p>
+          </div>
+
+          <div class="mc-status" id="mapStatus">Ready — pick a place to begin.</div>
+        </div>
+
+        <div class="map-layout">
+          <div id="mapView" class="map-view"></div>
+          <aside id="communityPanel" class="community-panel">
+            <div class="community-empty">
+              <div class="empty-illustration">🗺️</div>
+              <h3>No place selected yet</h3>
+              <p>Choose any location on Earth to view its community profile, prioritized needs, and a layered action plan covering individual, industrial, and municipal responses.</p>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- USE CASES SECTION -->
+    <section id="usecases-section" class="section">
+      <div class="usecases-container">
+        <h2>Urban Planning Use Cases</h2>
+        
+        <div class="usecase-form">
+          <h3>Scenario Analysis</h3>
+          <div class="form-group">
+            <label>Location Coordinates</label>
+            <input type="text" id="usecaseLocation" placeholder="23.8103, 90.4125" />
+          </div>
+          <div class="form-group">
+            <label>Location Name (Optional)</label>
+            <input type="text" id="usecaseLocationName" placeholder="e.g., Dhaka University Area" />
+          </div>
+          <div class="form-group">
+            <label>Detailed Scenario Description</label>
+            <textarea id="usecaseDescription" rows="6" placeholder="Provide a detailed description of your scenario and requirements..."></textarea>
+          </div>
+          <button class="btn primary" id="analyzeScenarioBtn">Analyze Scenario</button>
+        </div>
+
+        <div id="recommendationsContainer" class="recommendations-container hidden">
+          <h3>Recommendations</h3>
+          <div id="recommendationsList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AI CHATBOT SECTION -->
+    <section id="chatbot-section" class="section">
+      <div class="chatbot-container">
+        <div class="chatbot-header">
+          <h2>🤖 AI Urban Planning Assistant</h2>
+          <p class="chatbot-subtitle">Powered by Gemini 2.5 Flash AI</p>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+          <!-- Messages will be populated here -->
+        </div>
+
+        <div class="quick-actions">
+          <button class="quick-btn" data-prompt="What are the key urban health metrics for this location?">Key Metrics</button>
+          <button class="quick-btn" data-prompt="Provide policy recommendations for improving air quality">Policy Advice</button>
+          <button class="quick-btn" data-prompt="How can residents participate in urban planning?">Resident Engagement</button>
+          <button class="quick-btn" data-prompt="Show me urban health policy data">Policy Data</button>
+        </div>
+
+        <div class="chat-input-container">
+          <input type="text" id="chatInput" placeholder="Ask about urban planning, policies, or city health..." />
+          <button class="btn primary" id="sendChatBtn">Send</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Index Detail Modal -->
+  <div id="indexDetailModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="indexModalTitle">
+    <div class="index-modal-backdrop" data-close-modal></div>
+    <div class="index-modal-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow" id="indexModalCategory">Category</span>
+          <h2 id="indexModalTitle">Index Name</h2>
+        </div>
+        <button class="close-popup" data-close-modal aria-label="Close">✕</button>
+      </header>
+
+      <!-- Row 1: Summary metrics -->
+      <div class="index-summary-row" id="indexSummaryRow">
+        <!-- populated by JS -->
+      </div>
+
+      <!-- Row 2: Tabs -->
+      <div class="index-tabs" role="tablist">
+        <button class="index-tab active" data-tab="components" role="tab" aria-selected="true">Components</button>
+        <button class="index-tab" data-tab="dataSources" role="tab" aria-selected="false">Data Sources</button>
+        <button class="index-tab" data-tab="technology" role="tab" aria-selected="false">Technology</button>
+        <button class="index-tab" data-tab="formula" role="tab" aria-selected="false">Formula</button>
+        <button class="index-tab" data-tab="outlook" role="tab" aria-selected="false">Outlook</button>
+      </div>
+
+      <div class="index-tab-content" id="indexTabContent" role="tabpanel">
+        <!-- populated by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Trend Insights Modal -->
+  <div id="trendInsightsModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="trendInsightsTitle">
+    <div class="index-modal-backdrop" data-close-trends></div>
+    <div class="index-modal-panel" role="document">
+      <header class="index-modal-header">
+        <div>
+          <span class="eyebrow">Historical Trends</span>
+          <h2 id="trendInsightsTitle">Trend Insights</h2>
+        </div>
+        <button class="close-popup" data-close-trends aria-label="Close">✕</button>
+      </header>
+      <div id="trendInsightsBody"><!-- populated by JS --></div>
+    </div>
+  </div>
+
+  <!-- Community Need Detail Modal -->
+  <div id="needDetailModal" class="index-modal hidden" role="dialog" aria-modal="true" aria-labelledby="needDetailTitle">
+    <div class="index-modal-backdrop" data-close-need></div>
+    <div class="index-modal-panel need-detail-panel" role="document">
+      <header class="index-modal-header need-modal-header">
+        <div class="need-modal-titlewrap">
+          <span class="need-modal-icon" id="needModalIcon">🌍</span>
+          <div>
+            <span class="eyebrow" id="needModalEyebrow">Community Need</span>
+            <h2 id="needDetailTitle">Need</h2>
+            <div class="need-modal-meta">
+              <span class="nc-pill" id="needModalPill">—</span>
+              <span class="need-modal-place" id="needModalPlace">—</span>
+            </div>
+          </div>
+        </div>
+        <button class="close-popup" data-close-need aria-label="Close">✕</button>
+      </header>
+      <div id="needDetailBody"><!-- populated by JS --></div>
+    </div>
+  </div>
+
+  <!-- 3D Terrain Studio Modal -->
+  <div id="terrainStudioModal" class="terrain-modal hidden" role="dialog" aria-modal="true" aria-labelledby="terrainStudioTitle">
+    <div class="terrain-backdrop"></div>
+    <div class="terrain-panel" role="document">
+      <header class="terrain-head">
+        <div>
+          <span class="eyebrow">Satellite → Editable 3D City Planner</span>
+          <h2 id="terrainStudioTitle">🏙️ 3D City Planner Studio</h2>
+          <p class="terrain-sub">Turn any location into a live 3D site from real satellite &amp; elevation data, then zone land use, generate a city, lay roads, sculpt terrain, run a solar shadow study, and get an AI planning review — inspired by InfraWorks &amp; CityEngine.</p>
+        </div>
+        <button class="close-popup" id="terrainCloseBtn" aria-label="Close">✕</button>
+      </header>
+
+      <div class="terrain-generate-bar">
+        <input type="text" id="terrainLocationInput" placeholder="Place name or coordinates (lat, lng)" />
+        <label class="terrain-field">
+          <span>Area (km)</span>
+          <select id="terrainArea">
+            <option value="2">2</option>
+            <option value="5" selected>5</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+        <label class="terrain-field">
+          <span>Detail</span>
+          <select id="terrainResolution">
+            <option value="32">Preview (32²)</option>
+            <option value="48">Standard (48²)</option>
+            <option value="64" selected>Detailed (64²)</option>
+            <option value="96">High Detail (96²)</option>
+          </select>
+        </label>
+        <button class="btn primary" id="terrainGenerateBtn">✨ Build Digital Twin</button>
+        <button class="btn secondary" id="terrainImportGisBtn" title="Reload real OpenStreetMap buildings, roads, water and land-use">↻ Reload GIS</button>
+        <button class="btn secondary" id="terrainBuildCityBtn" title="Rebuild terrain + GIS as a clean architectural massing model">Refresh Twin</button>
+      </div>
+
+      <div class="terrain-examples">
+        <span>Try:</span>
+        <button class="example-btn" onclick="terrainExample('Mount Everest')">Mount Everest</button>
+        <button class="example-btn" onclick="terrainExample('Grand Canyon')">Grand Canyon</button>
+        <button class="example-btn" onclick="terrainExample('Kathmandu')">Kathmandu</button>
+        <button class="example-btn" onclick="terrainExample('27.9881, 86.9250')">27.9881, 86.9250</button>
+        <button class="example-btn" onclick="terrainExample('36.5786, -118.2923')">36.5786, -118.2923</button>
+      </div>
+
+      <div class="terrain-status" id="terrainStatus">Enter a location and generate a 3D terrain model.</div>
+
+      <div class="terrain-workspace">
+        <div class="terrain-canvas-col">
+          <div id="terrainCanvasWrap" class="terrain-canvas-wrap">
+            <div class="terrain-placeholder">
+              <div class="terrain-placeholder-icon">🗺️</div>
+              <p>Generate a location to build an interactive 3D terrain</p>
+            </div>
+            <aside id="terrainTwinPreview" class="terrain-twin-preview hidden" aria-label="Observed satellite imagery with planned changes">
+              <div class="twin-preview-head">
+                <span>Digital Twin</span>
+                <small>Observed + planned</small>
+              </div>
+              <canvas id="terrainTwinPreviewCanvas" width="240" height="160"></canvas>
+              <p>NASA imagery with editable overlays</p>
+            </aside>
+          </div>
+
+          <div id="terrainToolbar" class="terrain-toolbar hidden">
+            <div class="terrain-tool-group" role="group" aria-label="Edit tools">
+              <button class="terrain-tool active" data-mode="orbit" title="Orbit / rotate">🖐️ Orbit</button>
+              <button class="terrain-tool" data-mode="raise" title="Raise terrain">⬆️ Raise</button>
+              <button class="terrain-tool" data-mode="lower" title="Lower terrain">⬇️ Lower</button>
+              <button class="terrain-tool" data-mode="smooth" title="Smooth terrain">〰️ Smooth</button>
+              <button class="terrain-tool" data-mode="flatten" title="Flatten to first click height">🟦 Flatten</button>
+            </div>
+            <div class="terrain-tool-group" role="group" aria-label="Object tools">
+              <button class="terrain-tool" data-mode="structure" title="Build / place object">🏗️ Build</button>
+              <button class="terrain-tool" data-mode="select" title="Select object">🎯 Select</button>
+              <button class="terrain-tool" data-mode="move" title="Move selected object">✋ Move</button>
+              <button class="terrain-tool" data-mode="delete" title="Delete object (click)">🗑️ Delete</button>
+            </div>
+            <div class="terrain-tool-group" role="group" aria-label="City planning tools">
+              <button class="terrain-tool" data-mode="zone" title="Paint land-use zones">🎨 Zone</button>
+              <button class="terrain-tool" data-mode="road" title="Draw a road (click points)">🛣️ Road</button>
+              <button class="terrain-tool" data-mode="measure" title="Measure distance">📏 Measure</button>
+            </div>
+            <label class="terrain-field inline">
+              <span>Land use</span>
+              <select id="zonePaintType">
+                <option value="residential">🟢 Residential</option>
+                <option value="commercial">🔵 Commercial</option>
+                <option value="industrial">🟠 Industrial</option>
+                <option value="park">🌳 Park / Green</option>
+                <option value="water">💧 Water</option>
+                <option value="none">⬜ Erase</option>
+              </select>
+            </label>
+            <label class="terrain-field inline">
+              <span>Object</span>
+              <select id="structureType">
+                <option value="building">Building</option>
+                <option value="tower">Tower</option>
+                <option value="bridge">Bridge</option>
+                <option value="dam">Dam</option>
+                <option value="road">Road</option>
+                <option value="tree">Tree</option>
+                <option value="marker">Marker</option>
+              </select>
+            </label>
+            <label class="terrain-slider">
+              <span>Object size <b id="terrainStructureSizeVal">1.0×</b></span>
+              <input type="range" id="terrainStructureSize" min="0.3" max="4" step="0.1" value="1" />
+            </label>
+            <label class="terrain-slider">
+              <span>Exaggeration <b id="terrainExaggVal">1.0×</b></span>
+              <input type="range" id="terrainExagg" min="0.5" max="4" step="0.1" value="1" />
+            </label>
+            <label class="terrain-slider">
+              <span>Brush size</span>
+              <input type="range" id="terrainBrushRadius" min="1" max="8" step="0.5" value="2.5" />
+            </label>
+            <label class="terrain-slider">
+              <span>Brush strength</span>
+              <input type="range" id="terrainBrushStrength" min="0.1" max="2" step="0.1" value="0.6" />
+            </label>
+            <label class="terrain-slider">
+              <span>Sun time <b id="terrainSunTimeVal">12:00</b></span>
+              <input type="range" id="terrainSunTime" min="6" max="18" step="0.25" value="12" />
+            </label>
+            <div class="terrain-tool-group">
+              <button class="btn primary small" id="terrainGenerateCityBtn" title="Procedurally build a city from your zoning">🏙️ Generate City</button>
+              <button class="btn secondary small" id="terrainClearCityBtn">🧹 Clear City</button>
+              <button class="btn secondary small" id="terrainRoadFinishBtn">✅ Finish Road</button>
+              <button class="btn secondary small" id="terrainZoneViewBtn">🗺️ Zones: off</button>
+              <button class="btn secondary small" id="terrainZoneClearBtn">❌ Clear Zones</button>
+              <button class="btn secondary small" id="terrainSunBtn">🌞 Sun study: off</button>
+              <button class="btn secondary small" id="terrainMeasureClearBtn">📏 Clear Measure</button>
+            </div>
+            <label class="terrain-field inline">
+              <span>Style</span>
+              <select id="terrainStyleSelect" title="Visualization style">
+                <option value="white" selected>⬜ Architectural</option>
+                <option value="satellite">🛰️ Satellite overlay</option>
+                <option value="colorful">🌈 Analytical color</option>
+                <option value="realistic">🏙️ Realistic</option>
+              </select>
+            </label>
+            <div class="terrain-tool-group">
+              <button class="btn secondary small" id="terrainResetViewBtn" title="Frame the whole model (3/4 aerial)">🎥 Reset View</button>
+              <button class="btn secondary small" id="terrainTopViewBtn" title="Look straight down (map view)">⬇️ Top View</button>
+              <button class="btn secondary small" id="terrainSurfaceBtn">🛰️ Satellite</button>
+              <button class="btn secondary small" id="terrainWireBtn">🔲 Wireframe</button>
+              <button class="btn secondary small" id="terrainResetBtn">↺ Reset</button>
+            </div>
+            <div id="terrainSelection" class="terrain-selection hidden"></div>
+          </div>
+          <p class="terrain-hint">Observed twin: <b>Build Digital Twin</b> loads terrain + real GIS geometry. Scenario mode: <b>Zone</b> paint land use → <b>Generate City</b> → add <b>Road</b>s (click points, then Finish Road) → <b>Sun study</b> for shadows → <b>Analyze</b> for an AI planning review. <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo, <kbd>Del</kbd> delete selected.</p>
+        </div>
+
+        <aside class="terrain-side">
+          <div class="terrain-stats" id="terrainStats">
+            <div><span>Relief</span><strong>—</strong></div>
+            <div><span>Mean elev.</span><strong>—</strong></div>
+            <div><span>Buildings</span><strong>0</strong></div>
+            <div><span>Est. population</span><strong>0</strong></div>
+          </div>
+
+          <div class="terrain-export">
+            <button class="btn primary" id="terrainAnalyzeBtn">Analyze Environmental Impact</button>
+            <button class="btn secondary" id="terrainDownloadBtn">💾 Export Plan (JSON)</button>
+          </div>
+
+          <div class="terrain-model-export">
+            <p class="terrain-model-title">🧱 Export 3D Model</p>
+            <div class="terrain-model-btns">
+              <button class="btn secondary small" id="terrainExportGlbBtn" title="Textured model (Blender / Windows 3D Viewer)">GLB · textured</button>
+              <button class="btn secondary small" id="terrainExportObjBtn" title="OBJ + MTL + satellite texture (CAD / Blender)">OBJ + texture</button>
+              <button class="btn secondary small" id="terrainExportStlBtn" title="Watertight solid for 3D printing">STL · 3D print</button>
+            </div>
+          </div>
+
+          <div id="terrainAnalysis" class="terrain-analysis hidden">
+            <h4>Environmental Impact Analysis</h4>
+            <div id="terrainAnalysisBody" class="terrain-analysis-body"></div>
+          </div>
+
+          <div class="terrain-help">
+            <p><strong>City planner workflow</strong></p>
+            <ul>
+              <li>🎨 <b>Zone</b> — paint residential / commercial / industrial / parks / water</li>
+              <li>🏙️ <b>Generate City</b> — procedurally build from your zoning</li>
+              <li>🛣️ <b>Road</b> — click points, then Finish Road</li>
+              <li>⛰️ Sculpt terrain &amp; place custom structures</li>
+              <li>🌞 <b>Sun study</b> — shadows across the day</li>
+              <li>📏 <b>Measure</b> real-world distances</li>
+              <li>✨ AI planning review + JSON export</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p>© 2024 LUPUS CORTEX - Urban Intelligence Solutions | www.lupus-cortex.com</p>
+    <p>Proprietary analysis - authorized use only.</p>
+  </footer>
+
+  <!-- Main Application Scripts -->
+  <script src="app.js"></script>
+  <script src="analysis-client.js"></script>
+  <script src="indexDetails.js"></script>
+  <script src="dashboard.js"></script>
+  <script src="nasa3d.js"></script>
+  <script src="chatbot.js"></script>
+  <script src="usecases.js"></script>
+  <script src="map.js"></script>
+  <script src="terrain3d fixed.js"></script>
+  <script src="local-insights.js"></script>
+</body>
+</html>
