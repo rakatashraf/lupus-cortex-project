@@ -2940,10 +2940,9 @@ Keep it structured with short headers and bullet points.`;
   // ===========================================================================
 
   const TX_MAX_AREA_KM2 = 50; // selection limit, shown on the area pill
-  const TX_FREE_CONTOUR_INTERVALS = [5, 10, 20];
-  const TX_PRO_CONTOUR_INTERVALS = [0.1, 0.5, 1, 2];
-  const TX_FREE_DTM_RESOLUTIONS = [10, 20, 30];
-  const TX_PRO_DTM_RESOLUTIONS = [0.5, 1, 2, 5];
+  // Every interval and DTM resolution is available — no tier, no paywall.
+  const TX_CONTOUR_INTERVALS = [0.1, 0.5, 1, 2, 5, 10, 20];
+  const TX_DTM_RESOLUTIONS = [0.5, 1, 2, 5, 10, 20, 30];
   const TX_DEFAULT_BUILDING_HEIGHT_M = DEFAULT_FLOOR_M * 3; // 9.6 m, documented in exports
 
   const TX = {
@@ -2954,38 +2953,20 @@ Keep it structured with short headers and bullet points.`;
     section: { active: false, mode: 'select', a: null, b: null }, // endpoints in normalized u/v
     master: { satellite: true, d2: true, d3: true, raw: false },
     format: { satellite: 'JPEG', d2: 'DXF', d3: 'DXF', raw: 'GeoJSON' },
-    layers2d: { buildings: true, parcels: true, roads: true, railways: true, waterways: true, shadows: true, trees: true, aiTrees: false, contours: true },
-    layers3d: { buildings: true, roofsAI: false, parcels: false, roads: false, railways: false, waterways: false, trees: true, aiTrees: false, contours: false, terrainMesh: true },
-    layersRaw: { buildings: true, parcels: true, roads: true, railways: true, waterways: true, trees: true, aiTrees: true, contours: true, terrain: false },
+    layers2d: { buildings: true, roads: true, railways: true, waterways: true, shadows: true, trees: true, contours: true },
+    layers3d: { buildings: true, roads: false, railways: false, waterways: false, trees: true, contours: false, terrainMesh: true },
+    layersRaw: { buildings: true, roads: true, railways: true, waterways: true, trees: true, contours: true, terrain: false },
   };
 
-  // Format support in this free local build. PRO / PRO+ formats exist as
-  // buttons (the reference product gates them) but are not producible here;
-  // selecting one shows a clear message instead of a fake file.
-  const TX_FORMATS = {
-    satellite: [{ name: 'JPEG', pro: false }],
-    d2: [
-      { name: 'DXF', pro: false }, { name: 'DWG', pro: false }, { name: 'RVT', pro: 'PRO+' },
-      { name: 'SKP', pro: false }, { name: '3DM', pro: false }, { name: 'PDF', pro: false }, { name: 'SVG', pro: false },
-    ],
-    d3: [
-      { name: 'DXF', pro: false }, { name: 'IFC', pro: 'PRO+' }, { name: 'RVT', pro: 'PRO+' },
-      { name: 'SKP', pro: false }, { name: '3DM', pro: false }, { name: 'OBJ', pro: false },
-      { name: 'glTF', pro: false }, { name: 'STL', pro: false },
-    ],
-    raw: [{ name: 'GeoJSON', pro: false }, { name: 'TIFF', pro: false }, { name: 'TXT', pro: false }],
-  };
+  // Formats this browser build can actually write. Proprietary/binary
+  // formats are not listed: they cannot be produced in a browser, so
+  // they are not offered as buttons. Every format shown in the panel
+  // exports a real file.
   const TX_PRODUCIBLE = { satellite: ['JPEG'], d2: ['DXF', 'SVG'], d3: ['DXF', 'OBJ', 'glTF', 'STL'], raw: ['GeoJSON', 'TXT'] };
-  function txFormatInfo(section, format) {
-    const list = TX_FORMATS[section] || [];
-    return list.find((f) => f.name === format) || { name: format, pro: false };
-  }
   function txFormatProducible(section, format) {
     return (TX_PRODUCIBLE[section] || []).includes(format);
   }
   function txSelectFormat(section, format) {
-    const info = txFormatInfo(section, format);
-    if (info.pro) return { ok: false, gated: true, reason: `${format} is a ${info.pro} format in the reference product and is not available in this free local build. DXF, SVG, OBJ, glTF and STL are available.` };
     if (!txFormatProducible(section, format)) return { ok: false, gated: false, reason: `${format} export is not available in this browser build. Use ${TX_PRODUCIBLE[section].join(', ')}.` };
     TX.format[section] = format;
     return { ok: true };
@@ -3589,8 +3570,8 @@ Keep it structured with short headers and bullet points.`;
   // --- interval / DTM dropdown (one shared menu) ------------------------------
   let txIntervalTarget = null; // { kind: 'contour' | 'dtm' }
   function txIntervalOptions(kind) {
-    if (kind === 'dtm') return { free: TX_FREE_DTM_RESOLUTIONS, pro: TX_PRO_DTM_RESOLUTIONS, current: TX.dtmResolutionM, label: 'DTM Resolution' };
-    return { free: TX_FREE_CONTOUR_INTERVALS, pro: TX_PRO_CONTOUR_INTERVALS, current: TX.contourIntervalM, label: 'Contour interval' };
+    if (kind === 'dtm') return { options: TX_DTM_RESOLUTIONS, current: TX.dtmResolutionM, label: 'DTM Resolution', min: 0.5 };
+    return { options: TX_CONTOUR_INTERVALS, current: TX.contourIntervalM, label: 'Contour interval', min: 0.1 };
   }
   function txOpenIntervalMenu(kind, anchorBtn) {
     txIntervalTarget = { kind };
@@ -3601,17 +3582,12 @@ Keep it structured with short headers and bullet points.`;
     const spec = txIntervalOptions(kind);
     input.value = `${spec.current.toFixed(2)} m`;
     opts.innerHTML = '';
-    [...spec.pro.map((v) => ({ v, pro: true })), ...spec.free.map((v) => ({ v, pro: false }))].forEach(({ v, pro }) => {
+    spec.options.forEach((v) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'tx-interval-option' + (v === spec.current ? ' selected' : '');
-      b.innerHTML = `<span></span>${pro ? '<span class="tx-pro">PRO</span>' : ''}`;
-      b.querySelector('span').textContent = `${v} m`;
+      b.textContent = `${v} m`;
       b.addEventListener('click', () => {
-        if (pro) {
-          txGateNote(`${v} m ${kind === 'dtm' ? 'DTM resolution' : 'contour interval'} is a PRO option in the reference product and is not available in this free local build. Free options: ${spec.free.join(', ')} m.`);
-          return;
-        }
         txApplyInterval(kind, v);
         txCloseIntervalMenu();
       });
@@ -3634,16 +3610,8 @@ Keep it structured with short headers and bullet points.`;
   }
   function txApplyInterval(kind, value) {
     if (kind === 'dtm') {
-      if (!TX_FREE_DTM_RESOLUTIONS.includes(value)) {
-        txGateNote(`${value} m DTM resolution is a PRO option in the reference product and is not available in this free local build. Free options: ${TX_FREE_DTM_RESOLUTIONS.join(', ')} m.`);
-        return false;
-      }
       TX.dtmResolutionM = value;
     } else {
-      if (!TX_FREE_CONTOUR_INTERVALS.includes(value)) {
-        txGateNote(`${value} m contour interval is a PRO option in the reference product and is not available in this free local build. Free options: ${TX_FREE_CONTOUR_INTERVALS.join(', ')} m.`);
-        return false;
-      }
       TX.contourIntervalM = value;
       rebuildContours();
     }
@@ -3661,8 +3629,8 @@ Keep it structured with short headers and bullet points.`;
     const d3 = txEl('txDtmBtn'); if (d3) d3.disabled = !TX.layers3d.terrainMesh;
     const dr = txEl('txRawDtmBtn'); if (dr) dr.disabled = !TX.layersRaw.terrain;
   }
-  function txGateNote(msg) {
-    const el = txEl('txGateNote');
+  function txNote(msg) {
+    const el = txEl('txNote');
     if (el) { el.textContent = msg; el.classList.remove('hidden'); }
     setStatus(msg, 'warn');
   }
@@ -3698,7 +3666,7 @@ Keep it structured with short headers and bullet points.`;
     const el = txEl('txCoverageNote');
     if (!el) return;
     const notes = [];
-    notes.push('Cadastral parcels: no cadastre data is available for this area in the planner (parcels are shown as unavailable, never invented).');
+    notes.push('Cadastral parcels: no cadastre data is available for this area, so parcel boundaries are not included in exports (never invented).');
     if (!gisSourceData.railways.length) notes.push('Railways: no railway features returned by OpenStreetMap for this area.');
     if (!gisSourceData.buildings.length) notes.push('Buildings: no building footprints returned by OpenStreetMap for this area.');
     notes.push('Detailed terrain / LoD2 rooftops: only available where the source data supports them; this build uses the planner DEM and flat-roof extrusions.');
@@ -3736,11 +3704,6 @@ Keep it structured with short headers and bullet points.`;
     document.querySelectorAll('.tx-layer input[type="checkbox"]').forEach((cb) => {
       cb.addEventListener('change', () => {
         const section = cb.dataset.txSection, key = cb.dataset.txLayer;
-        if (cb.dataset.txPro) {
-          cb.checked = false;
-          txGateNote(`${cb.dataset.txLabel || key} is a PRO feature in the reference product (AI-detected trees/hedges and detailed roofs) and is not available in this free local build. No price is charged here.`);
-          return;
-        }
         txLayerChanged(section, key, cb.checked);
       });
     });
@@ -3749,7 +3712,7 @@ Keep it structured with short headers and bullet points.`;
       btn.addEventListener('click', () => {
         const section = btn.dataset.txSection, format = btn.dataset.txFormat;
         const res = txSelectFormat(section, format);
-        if (!res.ok) { txGateNote(res.reason); return; }
+        if (!res.ok) { txNote(res.reason); return; }
         document.querySelectorAll(`.tx-fmt[data-tx-section="${section}"]`).forEach((b) => b.classList.remove('selected'));
         btn.classList.add('selected');
       });
@@ -3761,11 +3724,12 @@ Keep it structured with short headers and bullet points.`;
     txEl('txIntervalInput')?.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' || !txIntervalTarget) return;
       const v = parseFloat(e.target.value);
-      if (!Number.isFinite(v) || v <= 0) { txGateNote('Enter an interval in metres, for example "5 m".'); return; }
+      if (!Number.isFinite(v) || v <= 0) { txNote('Enter an interval in metres, for example "5 m".'); return; }
       const spec = txIntervalOptions(txIntervalTarget.kind);
-      if (spec.free.includes(v)) { txApplyInterval(txIntervalTarget.kind, v); txCloseIntervalMenu(); }
-      else if (spec.pro.includes(v)) { txGateNote(`${v} m is a PRO option in the reference product and is not available in this free local build. Free options: ${spec.free.join(', ')} m.`); }
-      else { txGateNote(`Interval ${v} m is not offered. Free options: ${spec.free.join(', ')} m.`); }
+      const clamped = Math.max(v, spec.min);
+      if (clamped !== v) txNote(`${spec.label} below ${spec.min} m is not practical — using ${spec.min} m.`);
+      txApplyInterval(txIntervalTarget.kind, clamped);
+      txCloseIntervalMenu();
     });
     document.addEventListener('click', (e) => {
       const menu = txEl('txIntervalMenu');
@@ -3807,7 +3771,7 @@ Keep it structured with short headers and bullet points.`;
     return geometry.some((p) => txPointInBbox(p.lat, p.lon));
   }
   function collectExportFeatures() {
-    const out = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: contourSegments.slice(), parcels: [], shadows: false };
+    const out = { buildings: [], roads: [], railways: [], water: [], vegetation: [], contours: contourSegments.slice(), shadows: false };
     if (!terrainData) return out;
     const inBox = (g) => txFeatureInBbox(g);
     out.buildings = gisSourceData.buildings.filter((f) => inBox(f.geometry));
@@ -4150,7 +4114,7 @@ Keep it structured with short headers and bullet points.`;
     const size = txBboxKm();
     if (size && size.areaKm2 > TX_MAX_AREA_KM2) {
       setStatus(`Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`, 'error');
-      txGateNote(`Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`);
+      txNote(`Selection is ${size.areaKm2.toFixed(2)} km² — above the ${TX_MAX_AREA_KM2} km² limit for one export. Shrink the box to export.`);
       return;
     }
     const view = txEl('txMyExport');
@@ -4368,9 +4332,8 @@ Keep it structured with short headers and bullet points.`;
   window.__lxExport = {
     state: TX,
     TX_MAX_AREA_KM2,
-    TX_FREE_CONTOUR_INTERVALS,
-    TX_PRO_CONTOUR_INTERVALS,
-    TX_FREE_DTM_RESOLUTIONS,
+    TX_CONTOUR_INTERVALS,
+    TX_DTM_RESOLUTIONS,
     txBboxKm,
     txBboxCorners,
     txClampBbox,

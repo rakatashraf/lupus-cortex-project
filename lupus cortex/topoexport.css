@@ -1,4 +1,4 @@
-/* Export configurator styles v4 — 2026-11-07.
+/* Export configurator styles v5 — 2026-11-07 (no paywall: all options open, badge rules removed).
    Full dark-theme restyle on the main site's own tokens
    (--bg #050816, --bg-soft #0b1021, --accent #38bdf8, --text #e5e7eb,
    --muted #9ca3af, --border-soft #1f2933, radius 14px, accent gradient
@@ -19,7 +19,7 @@
 
 /* Empty status lines take zero space: no margin, padding or border
    while they carry no text. */
-.tx-progress:empty, .tx-coverage:empty, .tx-gate-note:empty,
+.tx-progress:empty, .tx-coverage:empty, .tx-note:empty,
 .tx-readout:empty, .tx-export-notes:empty { display: none; margin: 0; padding: 0; border: 0; }
 
 .lx-export {
@@ -88,8 +88,6 @@
 .tx-layer { display: flex; align-items: center; gap: 7px; padding: 3px 0; cursor: pointer; line-height: 1.35; color: #e5e7eb; }
 .tx-layer input[disabled] + span, .tx-layer input:disabled { cursor: not-allowed; }
 .tx-note { color: #9ca3af; font-size: 11px; }
-.tx-badge { display: inline-block; background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-radius: 4px; padding: 0 5px; font-size: 10px; font-weight: 700; line-height: 16px; }
-.tx-badge.pro { background: rgba(234, 179, 8, 0.15); color: #eab308; }
 .tx-interval-btn { margin-left: auto; padding: 2px 8px; border: 1px solid #1f2933; border-radius: 6px; background: #050816; color: #e5e7eb; font-size: 12px; cursor: pointer; }
 .tx-interval-btn:hover { border-color: #38bdf8; }
 .tx-interval-btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -98,12 +96,10 @@
 .tx-fmt { padding: 4px 9px; border: 1px solid #1f2933; border-radius: 6px; background: #050816; color: #e5e7eb; font-size: 12px; cursor: pointer; }
 .tx-fmt:hover { border-color: #38bdf8; }
 .tx-fmt.selected { background: linear-gradient(135deg, #38bdf8, #22c55e); border-color: transparent; color: #0f172a; font-weight: 600; }
-.tx-fmt.selected .tx-badge { background: rgba(15, 23, 42, 0.2); color: #0f172a; }
-.tx-fmt.selected .tx-badge.pro { background: rgba(15, 23, 42, 0.2); color: #0f172a; }
 
 /* Export Now + My export */
 .tx-export-now { position: sticky; bottom: 8px; z-index: 5; width: 100%; margin-top: 8px; padding: 10px; font-size: 14px; }
-.tx-gate-note { margin: 8px 0 0; padding: 8px 10px; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: 6px; font-size: 12px; line-height: 1.45; color: #eab308; }
+.tx-note { margin: 8px 0 0; padding: 8px 10px; background: rgba(234, 179, 8, 0.12); border: 1px solid rgba(234, 179, 8, 0.4); border-radius: 6px; font-size: 12px; line-height: 1.45; color: #eab308; }
 .tx-progress { margin: 8px 0 0; font-size: 12px; color: #e5e7eb; }
 .tx-my-export { margin-top: 8px; border-top: 1px solid #1f2933; padding-top: 8px; }
 .tx-my-export h4 { margin: 0 0 6px; font-size: 13px; color: #e5e7eb; }
