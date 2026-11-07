@@ -412,19 +412,46 @@ const TerrainStudio = (() => {
     return date.toISOString().slice(0, 10);
   }
 
-  async function resolveLatestGibsDate(zoom, x, y) {
-    const requestedDate = getGibsImageDate();
-    if (gibsDateCache.has(requestedDate)) return gibsDateCache.get(requestedDate);
-    for (let lagDays = 0; lagDays <= GIBS_DATE_FALLBACK_DAYS; lagDays++) {
-      const imageryDate = getGibsImageDate(lagDays);
-      const image = await loadTile(imageryDate, zoom, x, y);
-      if (image) {
-        const result = { requestedDate, imageryDate, lagDays, fallbackUsed: lagDays > 0, layer: NASA_GIBS_LAYER };
-        gibsDateCache.set(requestedDate, result);
-        return result;
+  // A tile that merely loads is not usable imagery: on hazy or cloudy days
+  // the MODIS pass over the area is a flat grey/white wash, which is what
+  // the twin preview showed as a grey box. Score the stitched crop by
+  // luminance spread and reject flat/white frames, so the preview falls back
+  // to the clearest recent day instead — or hides when nothing in the
+  // 10-day window is usable. Thresholds calibrated on real GIBS tiles over
+  // Rajshahi, 28 Oct-7 Nov 2026: haze sd 5-9, white cloud sd 15, clear
+  // land sd 21-57 (luminance 0-255).
+  const GIBS_MIN_LUMINANCE_SD = 20;
+  const GIBS_MAX_MEAN_LUMINANCE = 240;
+  function scoreImageryCanvas(canvas) {
+    try {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      if (!w || !h) return null;
+      const step = Math.max(1, Math.floor(Math.sqrt((w * h) / 1024)));
+      const data = ctx.getImageData(0, 0, w, h).data;
+      let n = 0, sum = 0, sumSq = 0;
+      for (let y = 0; y < h; y += step) {
+        for (let x = 0; x < w; x += step) {
+          const i = (y * w + x) * 4;
+          const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          sum += lum; sumSq += lum * lum; n++;
+        }
       }
+      if (!n) return null;
+      const mean = sum / n;
+      const sd = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+      return { mean, sd, usable: sd >= GIBS_MIN_LUMINANCE_SD && mean <= GIBS_MAX_MEAN_LUMINANCE };
+    } catch (err) {
+      return null; // tainted canvas: cannot score; caller keeps the old accept behaviour
     }
-    return null;
+  }
+
+  function formatImageryDate(isoDate) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const parts = String(isoDate || '').split('-');
+    if (parts.length !== 3) return isoDate || 'date unknown';
+    const month = months[parseInt(parts[1], 10) - 1] || '';
+    return `${parseInt(parts[2], 10)} ${month} ${parts[0]}`.trim();
   }
 
   function loadTile(date, z, x, y) {
@@ -475,43 +502,65 @@ const TerrainStudio = (() => {
       }
     }
     // GIBS is visual evidence only; numerical environmental features remain backend-owned.
-    const dateResolution = await resolveLatestGibsDate(z, tiles[0].tx, tiles[0].ty);
-    if (!dateResolution) return null;
-    const imgs = await Promise.all(tiles.map((t) => loadTile(dateResolution.imageryDate, z, t.tx, t.ty)));
-    imgs.forEach((img, i) => {
-      if (!img) return;
-      const { tx, ty } = tiles[i];
-      fctx.drawImage(img, (tx - x0) * TILE, (ty - y0) * TILE, TILE, TILE);
-    });
+    // Try newest first; a date counts only if its stitched crop actually
+    // shows land (scoreImageryCanvas), not merely loads. The clearest date
+    // found earlier today is retried first, then the rest of the window.
+    const requestedDate = getGibsImageDate();
+    const cached = gibsDateCache.get(requestedDate);
+    const lagOrder = [];
+    if (cached) lagOrder.push(cached.lagDays);
+    for (let lagDays = 0; lagDays <= GIBS_DATE_FALLBACK_DAYS; lagDays++) {
+      if (!lagOrder.includes(lagDays)) lagOrder.push(lagDays);
+    }
+    for (const lagDays of lagOrder) {
+      const imageryDate = getGibsImageDate(lagDays);
+      const imgs = await Promise.all(tiles.map((t) => loadTile(imageryDate, z, t.tx, t.ty)));
+      if (imgs.every((img) => !img)) continue; // nothing published for this date
+      fctx.clearRect(0, 0, full.width, full.height);
+      imgs.forEach((img, i) => {
+        if (!img) return;
+        const { tx, ty } = tiles[i];
+        fctx.drawImage(img, (tx - x0) * TILE, (ty - y0) * TILE, TILE, TILE);
+      });
 
-    // Crop the stitched canvas to the exact bbox
-    const cropX = (xF0 - x0) * TILE;
-    const cropY = (yF0 - y0) * TILE;
-    const cropW = (xF1 - xF0) * TILE;
-    const cropH = (yF1 - yF0) * TILE;
+      // Crop the stitched canvas to the exact bbox
+      const cropX = (xF0 - x0) * TILE;
+      const cropY = (yF0 - y0) * TILE;
+      const cropW = (xF1 - xF0) * TILE;
+      const cropH = (yF1 - yF0) * TILE;
 
-    const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(cropW));
-    out.height = Math.max(1, Math.round(cropH));
-    out.getContext('2d').drawImage(full, cropX, cropY, cropW, cropH, 0, 0, out.width, out.height);
+      const out = document.createElement('canvas');
+      out.width = Math.max(1, Math.round(cropW));
+      out.height = Math.max(1, Math.round(cropH));
+      out.getContext('2d').drawImage(full, cropX, cropY, cropW, cropH, 0, 0, out.width, out.height);
 
-    const tex = new THREE.CanvasTexture(out);
-    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-    else if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = true;
-    tex.needsUpdate = true;
-    return {
-      texture: tex,
-      source: 'NASA GIBS MODIS Terra True Color',
-      layer: NASA_GIBS_LAYER,
-      date: dateResolution.imageryDate,
-      requestedDate: dateResolution.requestedDate,
-      lagDays: dateResolution.lagDays,
-      fallbackUsed: dateResolution.fallbackUsed,
-      zoom: z
-    };
+      const score = scoreImageryCanvas(out);
+      if (score && !score.usable) {
+        console.warn(`GIBS ${imageryDate} unusable for the preview (mean ${score.mean.toFixed(0)}, sd ${score.sd.toFixed(1)}) - trying an earlier day.`);
+        continue;
+      }
+
+      const tex = new THREE.CanvasTexture(out);
+      if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      else if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      const result = { requestedDate, imageryDate, lagDays, fallbackUsed: lagDays > 0, layer: NASA_GIBS_LAYER };
+      gibsDateCache.set(requestedDate, result);
+      return {
+        texture: tex,
+        source: 'NASA GIBS MODIS Terra True Color',
+        layer: NASA_GIBS_LAYER,
+        date: imageryDate,
+        requestedDate,
+        lagDays,
+        fallbackUsed: lagDays > 0,
+        zoom: z
+      };
+    }
+    return null; // no usable imagery in the window: the preview hides instead of showing grey
   }
 
   // Apply GPU-dependent quality (max anisotropy) once a renderer exists
@@ -543,6 +592,10 @@ const TerrainStudio = (() => {
     }
 
     panel.classList.remove('hidden');
+    const meta = panel.querySelector('p');
+    if (meta && satelliteImageryMeta?.date) {
+      meta.textContent = `NASA imagery \u00b7 ${formatImageryDate(satelliteImageryMeta.date)} \u00b7 editable overlays`;
+    }
     const ctx = canvas.getContext('2d');
     const { width, height } = canvas;
     ctx.clearRect(0, 0, width, height);
