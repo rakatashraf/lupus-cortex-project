@@ -18,6 +18,9 @@ Environment overrides (all optional):
     LUPUS_V4_MODELS_DIR     models directory (default: <RUN_DIR>/lupus_output_v4/04_Trained_Models)
     LUPUS_V4_PREPROC_STATS  global_preprocess_stats.json (searched under the run folder)
     LUPUS_V4_CHECKPOINTS    checkpoints.json (searched under the run folder; optional)
+    LUPUS_V4_HYBRID_CONFIG  hybrid_config.json with frozen §13 ensemble weights
+                            (searched under the run folder; optional — without it
+                            the service serves RF values alone)
     LUPUS_REF_CSV           fixed reference CSV (searched under the run folder; optional)
     LUPUS_V4_PORT           port (default: 8100)
 
@@ -46,6 +49,11 @@ CHECKPOINTS_CANDIDATES = [
     Path("lupus_output_v4") / "checkpoints.json",
     Path("lupus_output_v4") / "05_Manifests" / "checkpoints.json",
     Path("checkpoints.json"),
+]
+HYBRID_CONFIG_CANDIDATES = [
+    Path("artifacts_v4mac") / "hybrid_config.json",
+    Path("lupus_output_v4") / "hybrid_config.json",
+    Path("hybrid_config.json"),
 ]
 REF_CANDIDATES = [
     Path("lupus_cortex_fixed_reference_30.csv"),
@@ -117,6 +125,7 @@ def resolve() -> dict[str, Path]:
         )
 
     resolved: dict[str, Path] = {
+        "LUPUS_V4_BASE": run_dir,
         "LUPUS_V4_MODELS_DIR": models_dir,
         "LUPUS_V4_PREPROC_STATS": stats_path,
     }
@@ -127,6 +136,13 @@ def resolve() -> dict[str, Path]:
     else:
         print("WARNING: checkpoints.json not found under the run folder; "
               "LSTM counts and per-component validation notes will be unavailable.")
+    hc_s = os.environ.get("LUPUS_V4_HYBRID_CONFIG", "")
+    hc: Path | None = Path(hc_s) if hc_s else _first_existing(run_dir, HYBRID_CONFIG_CANDIDATES)
+    if hc is not None and hc.is_file():
+        resolved["LUPUS_V4_HYBRID_CONFIG"] = hc
+    else:
+        print("WARNING: hybrid_config.json not found under the run folder; "
+              "the ensemble falls back to RF values alone.")
     ref_s = os.environ.get("LUPUS_REF_CSV", "")
     ref: Path | None = Path(ref_s) if ref_s else _first_existing(run_dir, REF_CANDIDATES)
     if ref is not None and ref.is_file():
@@ -177,10 +193,13 @@ def main() -> None:
         os.environ.setdefault(key, str(path))
     os.environ.setdefault("LUPUS_V4_LOG_DIR", str(SERVICE_DIR / "logs"))
 
+    print(f"Run folder:  {resolved['LUPUS_V4_BASE']}")
     print(f"Models dir:  {resolved['LUPUS_V4_MODELS_DIR']}")
     print(f"Stats file:  {resolved['LUPUS_V4_PREPROC_STATS']}")
     if "LUPUS_V4_CHECKPOINTS" in resolved:
         print(f"Checkpoints: {resolved['LUPUS_V4_CHECKPOINTS']}")
+    if "LUPUS_V4_HYBRID_CONFIG" in resolved:
+        print(f"Ensemble weights: {resolved['LUPUS_V4_HYBRID_CONFIG']}")
     if "LUPUS_REF_CSV" in resolved:
         print(f"Reference:   {resolved['LUPUS_REF_CSV']}")
     print(f"Logs dir:    {os.environ['LUPUS_V4_LOG_DIR']}")
